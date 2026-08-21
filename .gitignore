@@ -1,0 +1,42 @@
+# ---- キャプチャデータ・成果物（Git に入れない）----
+*.mdr/
+captures/
+*.ply
+*.spz
+*.splat
+*.las
+*.usdz
+*.glb
+*.arworldmap
+checkpoints/
+outputs/
+
+# ---- 外部リポジトリ ----
+vendor/
+
+# ---- Python ----
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# ---- Rust ----
+target/
+
+# ---- CMake / C++ ----
+build/
+build-*/
+
+# ---- Xcode / Swift ----
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+
+# ---- データセット ----
+datasets/
+
+# ---- macOS ----
+.DS_Store
