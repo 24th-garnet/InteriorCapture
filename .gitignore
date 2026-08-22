@@ -37,6 +37,8 @@ xcuserdata/
 
 # ---- データセット ----
 datasets/
+Mip-NeRF 360/
+*.zip
 
 # ---- macOS ----
 .DS_Store
