@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/24th-garnet/scaniverse_mimic/spec/mdr-v1.schema.json",
+  "title": "MDR v1 bundle",
+  "description": "madoriba recording bundle. capture(iPadOS) と recon(macOS) の契約。仕様は spec/mdr-v1.md を参照。",
+  "$defs": {
+    "manifest": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "session_id",
+        "created_at",
+        "device",
+        "video",
+        "depth",
+        "world_alignment",
+        "frame_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": "mdr-1" },
+        "session_id": { "type": "string", "minLength": 1 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "device": {
+          "type": "object",
+          "required": ["model", "os", "has_lidar"],
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "utsname.machine 例 iPad8,11"
+            },
+            "os": { "type": "string" },
+            "has_lidar": { "type": "boolean" }
+          }
+        },
+        "video": {
+          "type": "object",
+          "required": ["width", "height", "fps"],
+          "additionalProperties": false,
+          "description": "ARConfiguration.VideoFormat の実測値。想定値を書かない。",
+          "properties": {
+            "width": { "type": "integer", "exclusiveMinimum": 0 },
+            "height": { "type": "integer", "exclusiveMinimum": 0 },
+            "fps": { "type": "integer", "exclusiveMinimum": 0 }
+          }
+        },
+        "depth": {
+          "type": "object",
+          "required": ["width", "height", "format", "unit"],
+          "additionalProperties": false,
+          "properties": {
+            "width": { "type": "integer", "exclusiveMinimum": 0 },
+            "height": { "type": "integer", "exclusiveMinimum": 0 },
+            "format": { "const": "float16" },
+            "unit": { "const": "meter" }
+          }
+        },
+        "world_alignment": {
+          "const": "gravity",
+          "description": "gravityAndHeading は室内で磁気コンパスが不安定なため使わない"
+        },
+        "gravity": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "frame_count": { "type": "integer", "minimum": 0 },
+        "duration_sec": { "type": "number", "minimum": 0 }
+      }
+    },
+
+    "pose": {
+      "type": "object",
+      "description": "poses.jsonl の 1 行",
+      "required": ["i", "t", "transform", "intrinsics", "tracking"],
+      "additionalProperties": false,
+      "properties": {
+        "i": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "フレーム番号。frames/%06d.* と対応"
+        },
+        "t": { "type": "number", "description": "ARFrame.timestamp（秒）" },
+        "transform": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 16,
+          "maxItems": 16,
+          "description": "ARFrame.camera.transform。camera->world、列優先(column-major)。"
+        },
+        "intrinsics": {
+          "type": "object",
+          "required": ["fx", "fy", "cx", "cy"],
+          "additionalProperties": false,
+          "description": "ARFrame.camera.intrinsics を分解したもの。video.width/height 基準。フレームごとに変化する。配列にしないのは行優先/列優先の取り違えを原理的に排除するため。",
+          "properties": {
+            "fx": { "type": "number", "exclusiveMinimum": 0 },
+            "fy": { "type": "number", "exclusiveMinimum": 0 },
+            "cx": { "type": "number" },
+            "cy": { "type": "number" }
+          }
+        },
+        "tracking": {
+          "type": "string",
+          "enum": ["normal", "limited", "notAvailable"]
+        },
+        "exif": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "exposure": { "type": "number", "description": "ExposureTime（秒）" },
+            "iso": { "type": "number", "description": "ISOSpeedRatings" },
+            "brightness": { "type": "number", "description": "BrightnessValue" }
+          }
+        },
+        "conf_high_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "confidenceMap が .high の画素比"
+        },
+        "sharpness": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Laplacian 分散"
+        }
+      }
+    }
+  }
+}

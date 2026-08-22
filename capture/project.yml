@@ -1,0 +1,42 @@
+name: MadoribaCapture
+
+options:
+  bundleIdPrefix: com.garnet.madoriba
+  deploymentTarget:
+    iOS: "16.0"   # ARFrame.exifData が iOS 16+
+  createIntermediateGroups: true
+
+targets:
+  MadoribaCapture:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.garnet.madoriba.capture
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "2"        # iPad のみ
+        SWIFT_VERSION: "5.0"
+        # 署名チームは各自の環境で設定する。Xcode の Signing & Capabilities から
+        # Team を選ぶか、DEVELOPMENT_TEAM をここに書く。
+        CODE_SIGN_STYLE: Automatic
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: madoriba capture
+        UILaunchScreen: {}
+        # LiDAR スキャンにカメラを使う
+        NSCameraUsageDescription: 室内をスキャンして 3D 復元するためにカメラを使用します。
+        # Documents を Files アプリに露出させ、AirDrop / USB で Mac にコピーできるようにする。
+        # ストリーミング転送 (Phase 4) を実装するまではこれが唯一の取り出し口。
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIRequiredDeviceCapabilities: [arkit]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortrait
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false

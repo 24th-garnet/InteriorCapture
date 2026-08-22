@@ -29,11 +29,15 @@ build/
 build-*/
 
 # ---- Xcode / Swift ----
+# .xcodeproj は XcodeGen が capture/project.yml から生成する。
+# 生成物なのでコミットしない（project.yml が正）。
+*.xcodeproj/
+# Info.plist も project.yml の info.properties から生成される
+capture/Info.plist
 DerivedData/
 *.xcuserstate
 xcuserdata/
 .swiftpm/
-*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
 
 # ---- データセット ----
 datasets/

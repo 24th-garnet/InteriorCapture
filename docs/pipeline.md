@@ -103,8 +103,8 @@ ARKit 6 の 4K ビデオは **iPhone 11+ または M1 iPad Pro 以降**が条件
 | RGB | JPEG q=92, 1920×1440（VideoToolbox の HW エンコーダ） | ~450 KB |
 | `camera.transform` | float32[16] camera→world（ARKit 規約のまま保存） | 64 B |
 | `camera.intrinsics` | float32[9]（1920×1440 基準） | 36 B |
-| depth | `sceneDepth.depthMap` 256×192 Float32 → float16 + zstd | ~40 KB |
-| confidence | 256×192 UInt8 (0/1/2) + zstd | ~2 KB |
+| depth | `sceneDepth.depthMap` 256×192 Float32 → float16 + raw DEFLATE | ~40 KB |
+| confidence | 256×192 UInt8 (0/1/2) + raw DEFLATE | ~2 KB |
 | exif | ExposureTime / ISOSpeedRatings / BrightnessValue（iOS 16+ の `ARFrame.exifData`） | 12 B |
 | timestamp | float64 | 8 B |
 | trackingState | u8 | 1 B |
@@ -123,16 +123,25 @@ ARKit 6 の 4K ビデオは **iPhone 11+ または M1 iPad Pro 以降**が条件
 
 ```
 room-<uuid>.mdr/
-├── manifest.json          # セッションメタ・フレーム索引・スキーマ版
+├── manifest.json         # セッションメタ・スキーマ版
+├── poses.jsonl           # 1 行 1 フレーム（ポーズ + intrinsics + exif）
 ├── frames/
 │   ├── 000000.jpg
-│   ├── 000000.depth.zst   # float16 256x192
-│   ├── 000000.conf.zst
+│   ├── 000000.depth.zz   # float16 256x192 + raw DEFLATE
+│   ├── 000000.conf.zz
 │   └── ...
-├── poses.bin              # 全フレームのポーズ+intrinsics+exif を連結（固定長レコード）
-├── mesh.ply               # ARMeshAnchor 統合（Tier 1）
-└── worldmap.arworldmap    # 任意
+└── mesh.ply              # ARMeshAnchor 統合（Tier 1）
 ```
+
+**確定した仕様は [`spec/mdr-v1.md`](../spec/mdr-v1.md) にある。以降はそちらが正。**
+
+実装時に当初案から変えた点が 2 つある。
+
+- **ポーズを `poses.bin`（固定長バイナリ）ではなく JSONL にした。** 400 フレームで 160KB と
+  容量が無視でき、デバッグ時に目視・grep できる利点が勝る。
+- **圧縮を zstd ではなく raw DEFLATE にした。** Apple の Compression フレームワークは
+  zstd を持たない（LZFSE / LZ4 / ZLIB / LZMA のみ）。raw DEFLATE なら iOS は
+  `COMPRESSION_ZLIB`、Python は標準ライブラリ `zlib` で、双方とも外部依存ゼロで済む。
 
 `manifest.json` に `schema_version` を必ず入れる。ここが A/B 間の唯一の契約なので、破壊的変更を検知できるようにする。
 
@@ -205,8 +214,26 @@ confidence < `.high` の画素は**マスクして捨てる**。ここをケチ�
 
 ### 5.5 出力
 
-`cameras.txt` / `images.txt` / `points3D.txt` の COLMAP text model を書き出す。
-→ **既存の 3DGS 実装がそのまま食える形にしておく**（実装を差し替えても前段を作り直さなくて済む）。
+COLMAP モデルを書き出す。→ **既存の 3DGS 実装がそのまま食える形にしておく**
+（実装を差し替えても前段を作り直さなくて済む）。
+
+```
+scene/
+├── images/            # MDR の frames/*.jpg へのシンボリックリンク
+└── sparse/0/
+    ├── cameras.bin    # PINHOLE、1 フレーム = 1 カメラ
+    ├── images.bin
+    └── points3D.ply   # LiDAR 初期点群
+```
+
+実装で分かった制約:
+
+- **msplat はテキスト形式を受け付けない。** ディスパッチャが `cameras.bin` の存在で
+  判定するため、バイナリ必須。
+- ただし**点群は `points3D.bin` が無ければ `points3D.ply` にフォールバック**する。
+  可変長トラックを持つ `points3D.bin` を書かずに済むので PLY を使う。
+- **カメラは 1 フレーム = 1 台**にする。ARKit が intrinsics を毎フレーム再計算するため、
+  セッション共通の 1 台にまとめると再投影誤差になる。
 
 ---
 
