@@ -22,6 +22,9 @@ final class FrameStore {
 
     private let device: MTLDevice
     private(set) var frames: [BakedFrame] = []
+    /// デバッグ出力の保存先。設定されていれば最初の数フレームを PNG に落とす。
+    var debugDirectory: URL?
+    private var debugWritten = 0
 
     /// 上限。1 フレームあたり RGB 960x720 BGRA (2.6MB) + 深度 (0.2MB) で約 2.8MB。
     /// 250 枚で約 700MB。A12Z の 6GB に対して現実的な範囲に収める。
@@ -82,6 +85,13 @@ final class FrameStore {
                   Self.texture(from: $0, format: .r8Uint, device: device)
               })
         else { return }
+
+        // GPU に渡している入力が正しいかは現物を見るのが確実。最初の数枚だけ落とす。
+        if let dir = debugDirectory, debugWritten < 3 {
+            TextureDebug.writePNG(rgb, to: dir.appendingPathComponent("debug_rgb_\(debugWritten).png"))
+            TextureDebug.writeDepthPNG(d, to: dir.appendingPathComponent("debug_depth_\(debugWritten).png"))
+            debugWritten += 1
+        }
 
         let k = frame.camera.intrinsics
         frames.append(BakedFrame(

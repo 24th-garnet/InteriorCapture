@@ -123,7 +123,9 @@ final class CaptureSession: NSObject, ObservableObject {
                 self.startTime = nil
                 self.isRecording = true
                 if let device = MTLCreateSystemDefaultDevice() {
-                    self.frameStore = FrameStore(device: device)
+                    let store = FrameStore(device: device)
+                    store.debugDirectory = self.writer?.bundleURL
+                    self.frameStore = store
                     Task { @MainActor in self.baker = try? OnDeviceBaker() }
                 }
                 self.publish { $0.state = .recording; $0.acceptedCount = 0; $0.elapsed = 0 }

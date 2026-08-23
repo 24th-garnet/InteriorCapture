@@ -26,12 +26,14 @@ final class OnDeviceBaker {
     enum BakeError: LocalizedError {
         case metalUnavailable
         case unwrapFailed
+        case multiPageAtlas
         case allocationFailed
 
         var errorDescription: String? {
             switch self {
             case .metalUnavailable: return "Metal を初期化できません"
             case .unwrapFailed: return "UV 展開に失敗しました"
+            case .multiPageAtlas: return "アトラスが複数ページに分かれました"
             case .allocationFailed: return "GPU バッファを確保できません"
             }
         }
@@ -66,11 +68,12 @@ final class OnDeviceBaker {
     ///   - meshVertices: ARKit world 座標の頂点
     ///   - meshIndices: 三角形インデックス
     ///   - frames: 記録済みキーフレーム（RGB / 深度 / 信頼度 / ポーズ）
+    ///   - requestedAtlasSize: xatlas に渡す目安。実際の寸法はこれより大きくなりうる。
     func bake(
         meshVertices: [SIMD3<Float>],
         meshIndices: [UInt32],
         frames: [BakedFrame],
-        atlasSize: Int = 2048,
+        requestedAtlasSize: Int = 2048,
         viewExponent: Float = 8.0,
         progress: ((Int, Int) -> Void)? = nil
     ) throws -> Result {
@@ -84,10 +87,17 @@ final class OnDeviceBaker {
                     vertexCount: UInt(meshVertices.count),
                     indices: ip.baseAddress!,
                     indexCount: UInt(meshIndices.count),
-                    resolution: UInt32(atlasSize)
+                    resolution: UInt32(requestedAtlasSize)
                 )
             }
         }) else { throw BakeError.unwrapFailed }
+
+        // **xatlas は resolution を上限ではなく目安として扱う。**
+        // 2048 を要求しても 2367x2361 のような大きさを返す（実測）。
+        // 要求値でテクスチャを作ると、チャートの配置とテクセルが対応せず
+        // アトラス全面がノイズになる。実際に返ってきた寸法に合わせる。
+        guard atlas.atlasCount == 1 else { throw BakeError.multiPageAtlas }
+        let atlasSize = max(Int(atlas.atlasWidth), Int(atlas.atlasHeight))
 
         let outCount = Int(atlas.vertexCount)
         var vertices = [SIMD3<Float>](repeating: .zero, count: outCount)

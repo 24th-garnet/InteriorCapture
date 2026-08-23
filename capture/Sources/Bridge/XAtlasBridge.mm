@@ -11,12 +11,18 @@
 - (instancetype)initWithMapping:(std::vector<uint32_t> &&)mapping
                         indices:(std::vector<uint32_t> &&)indices
                             uvs:(std::vector<float> &&)uvs
-                     chartCount:(NSUInteger)chartCount {
+                     chartCount:(NSUInteger)chartCount
+                          width:(NSUInteger)width
+                         height:(NSUInteger)height
+                     atlasCount:(NSUInteger)atlasCount {
     if ((self = [super init])) {
         _mapping = std::move(mapping);
         _indices = std::move(indices);
         _uvs = std::move(uvs);
         _chartCount = chartCount;
+        _atlasWidth = width;
+        _atlasHeight = height;
+        _atlasCount = atlasCount;
     }
     return self;
 }
@@ -78,11 +84,15 @@
     }
     std::vector<uint32_t> outIndices(mesh.indexArray, mesh.indexArray + mesh.indexCount);
     NSUInteger charts = atlas->chartCount;
+    NSUInteger aw = atlas->width, ah = atlas->height, ac = atlas->atlasCount;
 
     xatlas::Destroy(atlas);
     return [[MDRAtlasResult alloc] initWithMapping:std::move(mapping)
                                            indices:std::move(outIndices)
                                                uvs:std::move(uvs)
-                                        chartCount:charts];
+                                        chartCount:charts
+                                             width:aw
+                                            height:ah
+                                        atlasCount:ac];
 }
 @end

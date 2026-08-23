@@ -17,6 +17,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// UV 座標。0..1 に正規化済み（vertexCount * 2 個）。
 @property (nonatomic, readonly) const float *uvs;
 @property (nonatomic, readonly) NSUInteger chartCount;
+/// xatlas が実際に生成したアトラスの寸法。**要求した resolution とは一致しない。**
+/// xatlas は resolution を上限ではなく目安として扱い、収まらなければ大きくする。
+@property (nonatomic, readonly) NSUInteger atlasWidth;
+@property (nonatomic, readonly) NSUInteger atlasHeight;
+/// アトラスのページ数。2 以上なら 1 枚のテクスチャには収まっていない。
+@property (nonatomic, readonly) NSUInteger atlasCount;
 @end
 
 @interface MDRXAtlas : NSObject
