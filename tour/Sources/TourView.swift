@@ -1,0 +1,130 @@
+import MetalKit
+import SwiftUI
+import simd
+
+/// MTKView を SwiftUI に載せ、ドラッグで見回し・クリックで前進を扱う。
+struct MetalTourView: NSViewRepresentable {
+    let renderer: TourRenderer
+    let camera: TourCamera
+
+    func makeNSView(context: Context) -> MTKView {
+        let view = TrackingMTKView()
+        view.device = MTLCreateSystemDefaultDevice()
+        view.colorPixelFormat = .bgra8Unorm
+        view.depthStencilPixelFormat = .depth32Float
+        view.clearColor = MTLClearColor(red: 0.02, green: 0.02, blue: 0.03, alpha: 1)
+        view.delegate = renderer
+        view.preferredFramesPerSecond = 60
+        view.camera = camera
+        return view
+    }
+
+    func updateNSView(_ nsView: MTKView, context: Context) {}
+}
+
+/// マウス入力を受けるための MTKView。
+///
+/// SwiftUI の DragGesture でも見回しは作れるが、MTKView に直接載せた方が
+/// 遅延が少なく、スクロールやキーも同じ場所で扱える。
+final class TrackingMTKView: MTKView {
+    weak var camera: TourCamera?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.makeFirstResponder(self)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        // 感度は「画面幅のドラッグで約 180 度」を目安にした
+        let s: Float = 0.005
+        Task { @MainActor in
+            camera?.look(deltaYaw: Float(event.deltaX) * s,
+                         deltaPitch: Float(-event.deltaY) * s)
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        // ドラッグではない単純なクリックを前進とみなす
+        guard event.clickCount == 1 else { return }
+        Task { @MainActor in camera?.advance() }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        Task { @MainActor in
+            switch event.keyCode {
+            case 126, 13: camera?.advance()          // ↑ / W
+            case 123, 0:  camera?.look(deltaYaw: -0.12, deltaPitch: 0)  // ← / A
+            case 124, 2:  camera?.look(deltaYaw:  0.12, deltaPitch: 0)  // → / D
+            default: break
+            }
+        }
+    }
+}
+
+struct TourView: View {
+    let tour: Tour
+    let splatURL: URL
+
+    @StateObject private var camera: TourCamera
+    @State private var renderer: TourRenderer?
+    @State private var status = "準備中"
+
+    init(tour: Tour, splatURL: URL) {
+        self.tour = tour
+        self.splatURL = splatURL
+        _camera = StateObject(wrappedValue: TourCamera(tour: tour))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            if let renderer {
+                MetalTourView(renderer: renderer, camera: camera).ignoresSafeArea()
+            } else {
+                Color.black.ignoresSafeArea()
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(status).font(.system(.caption, design: .monospaced))
+                Text("station \(camera.currentStation + 1) / \(tour.stations.count)")
+                    .font(.system(.caption, design: .monospaced))
+                Text("ドラッグ: 見回す   クリック / ↑: 進む")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .padding(10)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .padding()
+
+            // station の一覧。任意の場所へ直接飛べる。
+            VStack {
+                Spacer()
+                HStack(spacing: 6) {
+                    ForEach(tour.stations) { s in
+                        Button("\(s.index + 1)") { camera.move(to: s.index) }
+                            .buttonStyle(.bordered)
+                            .tint(s.index == camera.currentStation ? .accentColor : .gray)
+                    }
+                }
+                .padding(8)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding()
+            }
+        }
+        .task { await setup() }
+    }
+
+    private func setup() async {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            status = "Metal が使えません"; return
+        }
+        do {
+            let r = try TourRenderer(device: device, camera: camera)
+            r.onStatus = { s in Task { @MainActor in status = s } }
+            renderer = r
+            try await r.load(splatURL: splatURL)
+        } catch {
+            status = "エラー: \(error.localizedDescription)"
+        }
+    }
+}

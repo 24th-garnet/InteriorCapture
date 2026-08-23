@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import colmap, floorplan, pointcloud, verify
+from . import colmap, floorplan, pointcloud, tour, verify
 from .mdr import Bundle, MDRError
 from .mesh import read_ply_mesh
 
@@ -167,6 +167,21 @@ def cmd_floorplan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tour(args: argparse.Namespace) -> int:
+    bundle = Bundle(args.bundle)
+    t = tour.extract(bundle, spacing=args.spacing, eye_height=args.eye_height)
+
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(t.to_json())
+
+    deg = [len(s.neighbors) for s in t.stations]
+    print(f"station {len(t.stations)} 個 (間隔 {args.spacing} m)")
+    print(f"  隣接数 {min(deg)}〜{max(deg)}   床 {t.floor_y:+.2f} m   視点高 {t.eye_height} m")
+    print(f"  出力: {out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="mdr2colmap",
@@ -204,6 +219,13 @@ def main(argv: list[str] | None = None) -> int:
     fp.add_argument("bundle", help=".mdr ディレクトリ")
     fp.add_argument("-o", "--output", default=".", help="SVG/DXF の出力先")
     fp.set_defaults(func=cmd_floorplan)
+
+    tr = sub.add_parser("tour", help="撮影軌跡から station point を抽出する")
+    tr.add_argument("bundle", help=".mdr ディレクトリ")
+    tr.add_argument("-o", "--output", default="tour.json", help="出力先 JSON")
+    tr.add_argument("--spacing", type=float, default=1.0, help="station の間隔(m)")
+    tr.add_argument("--eye-height", type=float, default=1.5, help="視点の高さ(m)")
+    tr.set_defaults(func=cmd_tour)
 
     args = p.parse_args(argv)
     try:
