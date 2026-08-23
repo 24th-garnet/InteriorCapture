@@ -1,0 +1,68 @@
+diff --git a/core/src/loaders/image_io.cpp b/core/src/loaders/image_io.cpp
+index f916922..5aa88b7 100644
+--- a/core/src/loaders/image_io.cpp
++++ b/core/src/loaders/image_io.cpp
+@@ -3,6 +3,7 @@
+ #include <cstring>
+ #include <algorithm>
+ #include <stdexcept>
++#include <iostream>
+ 
+ #include <CoreGraphics/CoreGraphics.h>
+ #include <ImageIO/ImageIO.h>
+@@ -59,18 +60,31 @@ Image imreadRGB(const std::string &path) {
+ void imwriteRGB(const std::string &path, const Image &img) {
+     int w = img.width, h = img.height;
+ 
+-    // float32 RGB → uint8 RGB
+-    std::vector<uint8_t> rgb8(w * h * 3);
+-    for (int i = 0; i < w * h * 3; i++) {
+-        float v = std::clamp(img.data[i] * 255.0f, 0.0f, 255.0f);
+-        rgb8[i] = (uint8_t)(v + 0.5f);
++    // float32 RGB -> uint8 RGBX (32bpp)
++    //
++    // CGBitmapContextCreate does not accept 24bpp RGB (kCGImageAlphaNone with
++    // 3 bytes per pixel) for an RGB color space: it returns NULL, so the image
++    // and the PNG write silently fail, leaving only 0-byte ImageIO temp files.
++    // Core Graphics requires 32bpp here, so pad each pixel to 4 bytes and mark
++    // the last byte as unused.
++    std::vector<uint8_t> rgbx(static_cast<size_t>(w) * h * 4, 255);
++    for (int p = 0; p < w * h; p++) {
++        for (int c = 0; c < 3; c++) {
++            float v = std::clamp(img.data[p * 3 + c] * 255.0f, 0.0f, 255.0f);
++            rgbx[p * 4 + c] = (uint8_t)(v + 0.5f);
++        }
+     }
+ 
+     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+     CGContextRef ctx = CGBitmapContextCreate(
+-        rgb8.data(), w, h, 8, w * 3, colorSpace,
+-        kCGImageAlphaNone | kCGBitmapByteOrderDefault
++        rgbx.data(), w, h, 8, w * 4, colorSpace,
++        kCGImageAlphaNoneSkipLast | kCGBitmapByteOrderDefault
+     );
++    if (!ctx) {
++        CGColorSpaceRelease(colorSpace);
++        std::cerr << "imwriteRGB: failed to create bitmap context for " << path << "\n";
++        return;
++    }
+     CGImageRef cgImage = CGBitmapContextCreateImage(ctx);
+     CGContextRelease(ctx);
+     CGColorSpaceRelease(colorSpace);
+@@ -81,8 +95,15 @@ void imwriteRGB(const std::string &path, const Image &img) {
+ 
+     CGImageDestinationRef dest = CGImageDestinationCreateWithURL(url, CFSTR("public.png"), 1, nullptr);
+     CFRelease(url);
++    if (!dest) {
++        std::cerr << "imwriteRGB: failed to create PNG destination for " << path << "\n";
++        CGImageRelease(cgImage);
++        return;
++    }
+     CGImageDestinationAddImage(dest, cgImage, nullptr);
+-    CGImageDestinationFinalize(dest);
++    if (!CGImageDestinationFinalize(dest)) {
++        std::cerr << "imwriteRGB: failed to finalize PNG " << path << "\n";
++    }
+ 
+     CFRelease(dest);
+     CGImageRelease(cgImage);

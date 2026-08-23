@@ -21,6 +21,12 @@ from .mdr import Bundle, Frame
 from .pointcloud import PIXEL_CENTER_OFFSET, unproject_frame
 
 
+#: 判定に必要な最小の重なり点数。これを下回るペアは「間違っている」ではなく
+#: 「判定できない」として扱う。撮影中に視線を大きく振ると共通視野が消えるので、
+#: 実データでは普通に起きる。ここを NG と report すると誤報になる。
+MIN_POINTS_TO_JUDGE = 200
+
+
 @dataclass
 class ReprojectionResult:
     src_index: int
@@ -32,19 +38,26 @@ class ReprojectionResult:
     inlier_ratio: float
 
     @property
+    def judged(self) -> bool:
+        """共通視野が足りていて判定に使えるか。"""
+        return self.n_points >= MIN_POINTS_TO_JUDGE
+
+    @property
     def ok(self) -> bool:
         """中央値 5cm 以内かつ 8 割が 10cm 以内なら変換は正しいとみなす。
 
         LiDAR 自体の誤差と ARKit のドリフトがあるので完全一致はしない。
         座標変換を間違えている場合はメートル単位でずれるため、判定は明快に分かれる。
         """
-        return self.median_error < 0.05 and self.inlier_ratio > 0.8
+        return self.judged and self.median_error < 0.05 and self.inlier_ratio > 0.8
 
     def __str__(self) -> str:
+        head = f"frame {self.src_index:>6} -> {self.dst_index:<6} n={self.n_points:>7}"
+        if not self.judged:
+            return f"--  {head}  重なり不足のため判定不能"
         mark = "OK  " if self.ok else "NG  "
         return (
-            f"{mark}frame {self.src_index:>6} -> {self.dst_index:<6} "
-            f"n={self.n_points:>7}  median={self.median_error*100:7.2f}cm  "
+            f"{mark}{head}  median={self.median_error*100:7.2f}cm  "
             f"p90={self.p90_error*100:7.2f}cm  inlier={self.inlier_ratio*100:5.1f}%"
         )
 

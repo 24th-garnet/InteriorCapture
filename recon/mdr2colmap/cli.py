@@ -11,8 +11,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import colmap, pointcloud, verify
+from . import colmap, floorplan, pointcloud, verify
 from .mdr import Bundle, MDRError
+from .mesh import read_ply_mesh
 
 
 def _progress(prefix: str):
@@ -59,8 +60,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"  重ね合わせ画像: {p}")
 
     print()
-    if all(r.ok for r in results):
-        print("座標変換は正しいと判断できます。")
+    judged = [r for r in results if r.judged]
+    skipped = len(results) - len(judged)
+    if skipped:
+        print(f"{skipped} ペアは共通視野が足りず判定できませんでした（撮影の問題であり変換の問題ではない）。")
+
+    if not judged:
+        print("判定できるペアがありませんでした。--stride を小さくして試してください。")
+        return 1
+
+    if all(r.ok for r in judged):
+        print(f"座標変換は正しいと判断できます（{len(judged)} ペアで検証）。")
         return 0
 
     print("座標変換がずれています。次の順に疑ってください:")
@@ -121,6 +131,42 @@ def cmd_convert(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_floorplan(args: argparse.Namespace) -> int:
+    bundle = Bundle(args.bundle)
+    mesh_path = bundle.path / "mesh.ply"
+    if not mesh_path.exists():
+        print(f"エラー: mesh.ply がありません: {mesh_path}", file=sys.stderr)
+        return 2
+
+    mesh = read_ply_mesh(mesh_path)
+    plan = floorplan.extract(mesh)
+    inner = floorplan.interior_size(plan)
+
+    print(f"床 {plan.levels.floor:+.2f} m / 天井 {plan.levels.ceiling:+.2f} m"
+          f"  → 天井高 {plan.levels.height:.2f} m")
+    print(f"壁の主方向 {plan.azimuth_deg:.0f}°   検出した壁 {len(plan.walls)} 枚")
+    if inner:
+        a = inner[0] * inner[1]
+        print(f"内法 {inner[0]:.2f} x {inner[1]:.2f} m = {a:.1f} m2 ({a / 1.62:.1f} 畳)")
+    else:
+        w, d = plan.size
+        print(f"外接 {w:.2f} x {d:.2f} m = {plan.footprint_area:.1f} m2"
+              f"  (軸ごとに壁が2枚揃わなかったため内法は出せません)")
+
+    for wl in sorted(plan.walls, key=lambda x: -x.area):
+        ax = "X" if wl.axis == 0 else "Y"
+        note = f"  開口候補 {len(wl.openings)}" if wl.openings else ""
+        print(f"  壁 {ax}={wl.position:+6.2f} m  長さ {wl.length:5.2f} m"
+              f"  面積 {wl.area:5.1f} m2{note}")
+
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "floorplan.svg").write_text(floorplan.to_svg(plan))
+    (out / "floorplan.dxf").write_text(floorplan.to_dxf(plan))
+    print(f"\n出力: {out}/floorplan.svg, {out}/floorplan.dxf")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="mdr2colmap",
@@ -153,6 +199,11 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--no-denoise", action="store_true", help="外れ値除去を行わない")
     c.add_argument("--copy", action="store_true", help="画像をリンクせずコピーする")
     c.set_defaults(func=cmd_convert)
+
+    fp = sub.add_parser("floorplan", help="メッシュから間取り（壁線・寸法）を抽出する")
+    fp.add_argument("bundle", help=".mdr ディレクトリ")
+    fp.add_argument("-o", "--output", default=".", help="SVG/DXF の出力先")
+    fp.set_defaults(func=cmd_floorplan)
 
     args = p.parse_args(argv)
     try:

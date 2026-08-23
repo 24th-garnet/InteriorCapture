@@ -61,6 +61,18 @@ final class CaptureSession: NSObject, ObservableObject {
         deviceReport = report
         print("=== DeviceProbe ===\n\(report.summary)\n===================")
 
+        // Documents に残す。実機の素性は「想定ではなく実測」で押さえたいので、
+        // 起動のたびに上書きして最新を保持する。ファイル App から取り出せるほか、
+        // devicectl でも吸い出せる。
+        if let documents = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask
+        ).first {
+            try? report.summary.write(
+                to: documents.appendingPathComponent("deviceprobe.txt"),
+                atomically: true, encoding: .utf8
+            )
+        }
+
         let config = makeConfiguration(report)
         DispatchQueue.main.async { self.probe = report }
 

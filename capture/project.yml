@@ -19,9 +19,14 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "2"        # iPad のみ
         SWIFT_VERSION: "5.0"
-        # 署名チームは各自の環境で設定する。Xcode の Signing & Capabilities から
-        # Team を選ぶか、DEVELOPMENT_TEAM をここに書く。
+        # XcodeGen の既定は CODE_SIGN_IDENTITY = "iPhone Developer" だが、
+        # これは Xcode 11 世代で非推奨になった旧称。現行は "Apple Development"。
+        # 旧称のままだと署名 UI が正しく動かず、Team が選べないことがある。
+        CODE_SIGN_IDENTITY: "Apple Development"
         CODE_SIGN_STYLE: Automatic
+        # Xcode の GUI で選んだ Team は .xcodeproj に書かれるため
+        # xcodegen generate で消える。ここに書いて恒久化する。
+        DEVELOPMENT_TEAM: 5ND4753AQ6
     info:
       path: Info.plist
       properties:
