@@ -26,9 +26,27 @@ mdr2colmap verify room-xxxx.mdr --overlay /tmp/overlay
 # 2. COLMAP モデル + 初期点群を書き出す
 mdr2colmap convert room-xxxx.mdr -o scene
 
-# 3. 学習
-../vendor/msplat/build/msplat scene -n 7000 -o scene/splat.ply
+# 3. 学習（Brush 推奨設定。実測 250 秒 / PSNR 23.3）
+../vendor/brush/target/release/brush scene \
+  --total-train-iters 10000 --max-splats 500000 --max-resolution 640 \
+  --export-every 10000 --export-path out/ --export-name splat_{iter}.ply
+
+# 4. 間取り（メッシュから壁線・寸法を抽出）
+mdr2colmap floorplan room-xxxx.mdr -o plan/
 ```
+
+## 二段構成
+
+| | 実測 | 用途 |
+|---|---|---|
+| **Tier 1** テクスチャ付きメッシュ | **25〜63 秒** (PSNR 16.2) | 間取り・寸法・即時確認 |
+| **Tier 2** 3DGS | **250 秒** (PSNR 23.3) | 写実的なツアー |
+
+Tier 1 が Scaniverse（60〜90 秒）を上回っており、撮影直後の成果物はこちらで賄う。
+先行実装 PRESTAGELiDAR が「再構築に時間がかかりすぎる」ため却下された経緯への回答。
+
+学習設定の根拠と、採用しなかった施策の実測は
+[`docs/pipeline.md`](../docs/pipeline.md) §6.3〜6.4 を参照。
 
 ## 検証を先に走らせる理由
 
