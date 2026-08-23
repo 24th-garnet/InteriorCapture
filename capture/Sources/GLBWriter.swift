@@ -32,7 +32,17 @@ enum GLBWriter {
             return (offset, bytes.count)
         }
 
-        let posRange = append(vertices.withUnsafeBufferPointer { Data(buffer: $0) })
+        // **SIMD3<Float> は 16 バイトにパディングされる**（stride 16 / size 12）。
+        // Data(buffer:) はストライド分をそのまま書くため、そのまま渡すと
+        // 4 バイトの詰め物が混入し、glTF が期待する 12 バイト詰めとずれる。
+        // 結果として 2 頂点目以降が全部ずれ、幾何が「ツノ」状に破綻する。
+        var packed = Data(capacity: vertices.count * 12)
+        for v in vertices {
+            withUnsafeBytes(of: v.x) { packed.append(contentsOf: $0) }
+            withUnsafeBytes(of: v.y) { packed.append(contentsOf: $0) }
+            withUnsafeBytes(of: v.z) { packed.append(contentsOf: $0) }
+        }
+        let posRange = append(packed)
         // glTF の UV 原点は画像左上。アトラスも v=0 を上端としてラスタライズしているので
         // 上下反転は不要。反転するとチャートが散在するアトラス上の別位置を参照し、
         // 「ランダムなパッチワーク」に見える（Mac 側実装で実際に踏んだ）。
@@ -86,12 +96,22 @@ enum GLBWriter {
 
         var out = Data()
         func u32(_ v: UInt32) -> Data { withUnsafeBytes(of: v.littleEndian) { Data($0) } }
-        out.append(u32(0x4674_6C67))                       // "glTF"
+
+        // 識別子はリトルエンディアンの 4 バイト。定数を手で書くと桁を取り違えるので
+        // （実際に "glTF" を 0x4674_6C67、"BIN\0" を 0x0046_4942 と書いて壊した）
+        // 文字列から組み立てる。
+        func fourCC(_ s: String) -> UInt32 {
+            var v: UInt32 = 0
+            for (i, b) in Array(s.utf8).enumerated() { v |= UInt32(b) << (8 * i) }
+            return v
+        }
+
+        out.append(u32(fourCC("glTF")))
         out.append(u32(2))
         out.append(u32(UInt32(12 + 8 + json.count + 8 + blob.count)))
-        out.append(u32(UInt32(json.count))); out.append(u32(0x4E4F_534A))  // JSON
+        out.append(u32(UInt32(json.count))); out.append(u32(fourCC("JSON")))
         out.append(json)
-        out.append(u32(UInt32(blob.count))); out.append(u32(0x0046_4942))  // BIN
+        out.append(u32(UInt32(blob.count))); out.append(u32(fourCC("BIN\0")))
         out.append(blob)
 
         try out.write(to: url)

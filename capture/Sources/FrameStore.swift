@@ -11,7 +11,10 @@ import simd
 /// Mac 側の実測で「テクスチャの実効解像度は 4.6mm/テクセルで、
 /// アトラスを 4096^2 にしても改善しない」ことが分かっており、
 /// フル解像度の RGB を保持する必要はない。
-@MainActor
+///
+/// - Important: `append` は ARSession のデリゲートキューから**同期的に**呼ぶこと。
+///   ARKit は ARFrame のピクセルバッファをプールから再利用するため、
+///   非同期タスクに逃がして後から読むと、別フレームの内容になっている恐れがある。
 final class FrameStore {
 
     /// 焼き込み用 RGB の長辺。A12Z のメモリ（6GB）を考慮した上限。
@@ -24,22 +27,51 @@ final class FrameStore {
     /// 250 枚で約 700MB。A12Z の 6GB に対して現実的な範囲に収める。
     private let maxFrames: Int
 
+    /// 現在の間引き間隔。上限に達するたびに倍になる。
+    private var stride = 1
+    /// 間引き直後の受け入れ位相。これを合わせないと、次に採用されるまで
+    /// stride 分だけ待つことになり、保持数が上限より目減りする。
+    private var phase = 0
+
     init(device: MTLDevice, maxFrames: Int = 250) {
         self.device = device
         self.maxFrames = maxFrames
     }
 
-    var isFull: Bool { frames.count >= maxFrames }
+    private func keepEveryOther() {
+        var kept: [BakedFrame] = []
+        kept.reserveCapacity(frames.count / 2 + 1)
+        for (i, f) in frames.enumerated() where i % 2 == 0 { kept.append(f) }
+        frames = kept
+        stride *= 2
+    }
 
-    func reset() { frames.removeAll() }
+    /// 取り込んだ総数。間引き後の保持数（`frames.count`）とは別。
+    private(set) var seenCount = 0
+
+    func reset() { frames.removeAll(); seenCount = 0 }
 
     /// ARFrame から焼き込み用のテクスチャ一式を作る。
     ///
     /// `worldToCamera` はここで ARKit → OpenCV 規約に変換する。
     /// MDR バンドルには生値を保存する方針（変換は recon 側に一元化）だが、
     /// オンデバイス焼き込みは recon を経由しないので、ここで変換する必要がある。
+    /// 上限に達したら、**間引いて全体から均等に残す**。
+    ///
+    /// 単純に先頭で打ち切ると、撮影は外周を何周もするため部屋の一部しか
+    /// 写らない。実測では先頭 250 枚だと未着色が 14.4%、
+    /// 全体から均等に 250 枚なら 7.8%（全 507 枚の 7.4% とほぼ同じ）。
     func append(frame: ARFrame, sharpness: Float, encoder: ImageEncoder) {
-        guard !isFull, let depth = frame.sceneDepth else { return }
+        guard let depth = frame.sceneDepth else { return }
+        seenCount += 1
+
+        if frames.count >= maxFrames {
+            // 偶数番目を捨てて半分にし、以降は 1 枚おきに受け入れる。
+            // これを繰り返すと、撮影が長引いても全体に散った標本が保たれる。
+            keepEveryOther()
+            phase = seenCount % stride
+        }
+        if stride > 1 && (seenCount % stride) != phase { return }
 
         let scale = Float(Self.bakeImageWidth) / Float(CVPixelBufferGetWidth(frame.capturedImage))
         guard let rgb = encoder.downscaledTexture(from: frame.capturedImage,

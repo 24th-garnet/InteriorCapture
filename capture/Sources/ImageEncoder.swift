@@ -43,7 +43,13 @@ extension ImageEncoder {
                            device: MTLDevice) -> MTLTexture? {
         let src = CIImage(cvPixelBuffer: pixelBuffer)
         let scale = CGFloat(width) / src.extent.width
-        let scaled = src.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        // **CIContext.render(_:to:) は上下が反転する。**
+        // CIImage の原点は左下、MTLTexture は左上のため。補正しないと、
+        // シェーダが各テクセルに対して鏡像位置の色を拾い、
+        // フレームごとにバラバラの色が混ざってアトラスがノイズになる。
+        let scaled = src
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .oriented(.downMirrored)
         let w = Int(scaled.extent.width.rounded())
         let h = Int(scaled.extent.height.rounded())
 

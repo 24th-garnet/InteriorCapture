@@ -30,8 +30,8 @@ kernel void bakeFrame(texture2d<float, access::read>       rgb        [[texture(
                       device const float3                 *positions  [[buffer(0)]],
                       device const float3                 *normals    [[buffer(1)]],
                       device const uchar                  *valid      [[buffer(2)]],
-                      device atomic_float                 *accum      [[buffer(3)]],  // RGB * w
-                      device atomic_float                 *weight     [[buffer(4)]],
+                      device float                        *accum      [[buffer(3)]],  // RGB * w
+                      device float                        *weight     [[buffer(4)]],
                       constant BakeUniforms               &u          [[buffer(5)]],
                       uint2 gid [[thread_position_in_grid]])
 {
@@ -66,11 +66,15 @@ kernel void bakeFrame(texture2d<float, access::read>       rgb        [[texture(
     uint iy = min(uint(vv), u.videoHeight - 1);
     float3 color = rgb.read(uint2(ix, iy)).rgb * 255.0;
 
+    // 1 テクセル 1 スレッドで、各スレッドは自分の idx にしか書かない。
+    // 競合は起こり得ないので atomic は不要。
+    // （float の atomic 加算は Apple7 / A14 以降でないと保証されず、
+    //   A12Z では正しく動かない。実際にこれでアトラスがノイズになった。）
     float w = pow(facing, u.viewExponent) / max(cam.z, 0.2) * u.sharpness;
-    atomic_fetch_add_explicit(&accum[idx * 3 + 0], color.r * w, memory_order_relaxed);
-    atomic_fetch_add_explicit(&accum[idx * 3 + 1], color.g * w, memory_order_relaxed);
-    atomic_fetch_add_explicit(&accum[idx * 3 + 2], color.b * w, memory_order_relaxed);
-    atomic_fetch_add_explicit(&weight[idx], w, memory_order_relaxed);
+    accum[idx * 3 + 0] += color.r * w;
+    accum[idx * 3 + 1] += color.g * w;
+    accum[idx * 3 + 2] += color.b * w;
+    weight[idx] += w;
 }
 
 // 重み付き和を割って最終的なテクスチャにする。

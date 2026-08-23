@@ -122,12 +122,9 @@ final class CaptureSession: NSObject, ObservableObject {
                 self.selector.reset()
                 self.startTime = nil
                 self.isRecording = true
-                Task { @MainActor in
-                    if let device = MTLCreateSystemDefaultDevice() {
-                        let store = FrameStore(device: device)
-                        self.baker = try? OnDeviceBaker()
-                        self.queue.async { self.frameStore = store }
-                    }
+                if let device = MTLCreateSystemDefaultDevice() {
+                    self.frameStore = FrameStore(device: device)
+                    Task { @MainActor in self.baker = try? OnDeviceBaker() }
                 }
                 self.publish { $0.state = .recording; $0.acceptedCount = 0; $0.elapsed = 0 }
             } catch {
@@ -204,11 +201,9 @@ extension CaptureSession: ARSessionDelegate {
                 try writer.write(frame: frame, metrics: metrics)
                 // 焼き込み用にも保持する。ディスクの JPEG を読み直すと
                 // 605 枚のデコードだけで数十秒かかるため、GPU 上に持っておく。
-                if let store = frameStore {
-                    let f = frame
-                    let sharp = Float(metrics.sharpness)
-                    Task { @MainActor in store.append(frame: f, sharpness: sharp, encoder: self.encoder) }
-                }
+                // 同期的に取り込む。ARKit はピクセルバッファをプールから再利用するので、
+                // 非同期に逃がすと別フレームの内容を読んでしまう。
+                frameStore?.append(frame: frame, sharpness: Float(metrics.sharpness), encoder: encoder)
             } catch {
                 publish { $0.state = .failed(error.localizedDescription) }
                 isRecording = false
@@ -246,7 +241,7 @@ extension CaptureSession {
     fileprivate func bakeOnDevice(anchors: [ARMeshAnchor], bundleURL: URL) {
         guard let baker, let store = frameStore else { return }
 
-        let frames = MainActor.assumeIsolatedSafely { store.frames }
+        let frames = store.frames
         guard !frames.isEmpty else { return }
 
         var vertices: [SIMD3<Float>] = []
@@ -280,9 +275,20 @@ extension CaptureSession {
                     self.publish { $0.bakeProgress = Double(n) / Double(total) }
                 }
             }
+            // GLB は Blender / Three.js など外部ツール向け。
             let glb = bundleURL.appendingPathComponent("mesh.glb")
             try GLBWriter.write(vertices: result.vertices, uvs: result.uvs, indices: result.indices,
                                 textureRGBA: result.texture, atlasSize: result.atlasSize, to: glb)
+
+            // USDZ は iPad 上での確認用。iOS の Quick Look は GLB を開けない。
+            let usdz = bundleURL.appendingPathComponent("mesh.usdz")
+            do {
+                try USDZWriter.write(vertices: result.vertices, uvs: result.uvs, indices: result.indices,
+                                     textureRGBA: result.texture, atlasSize: result.atlasSize, to: usdz)
+            } catch {
+                // USDZ が失敗しても GLB は残っているので撮影成果は失われない
+                print("USDZ 書き出しに失敗: \(error.localizedDescription)")
+            }
             let summary = String(format: "%.0f 秒 / %d 三角形 / 未着色 %.1f%%",
                                  result.elapsed, result.indices.count / 3,
                                  result.unfilledRatio * 100)
@@ -290,7 +296,7 @@ extension CaptureSession {
         } catch {
             publish { $0.bakeProgress = nil; $0.bakeSummary = "焼き込み失敗: \(error.localizedDescription)" }
         }
-        MainActor.assumeIsolatedSafely { store.reset() }
+        store.reset()
     }
 }
 
