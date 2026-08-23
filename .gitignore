@@ -34,6 +34,7 @@ build-*/
 *.xcodeproj/
 # Info.plist も project.yml の info.properties から生成される
 capture/Info.plist
+tour/Info.plist
 DerivedData/
 *.xcuserstate
 xcuserdata/
