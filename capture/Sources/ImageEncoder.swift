@@ -1,6 +1,7 @@
 import CoreImage
 import CoreVideo
 import Foundation
+import Metal
 
 /// `ARFrame.capturedImage`（420 YpCbCr 二平面）を JPEG にする。
 ///
@@ -10,11 +11,14 @@ import Foundation
 final class ImageEncoder {
 
     private let context: CIContext
-    private let colorSpace: CGColorSpace
+    /// Metal テクスチャへ直接描画するための、デバイス指定つきコンテキスト。
+    let renderContext: CIContext
+    let colorSpace: CGColorSpace
 
-    init() {
+    init(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
         // ソフトウェアレンダラを避けて Metal 経路を使う
         context = CIContext(options: [.useSoftwareRenderer: false])
+        renderContext = device.map { CIContext(mtlDevice: $0) } ?? context
         colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
     }
 
@@ -26,5 +30,35 @@ final class ImageEncoder {
             ): quality
         ]
         return context.jpegRepresentation(of: image, colorSpace: colorSpace, options: options)
+    }
+}
+
+extension ImageEncoder {
+    /// 焼き込み用に縮小した BGRA テクスチャを作る。
+    ///
+    /// CIContext に YCbCr→RGB と縮小をまとめて任せる。GPU 上で完結するので
+    /// JPEG を経由するより速く、フル解像度を保持せずに済むのでメモリも節約できる。
+    func downscaledTexture(from pixelBuffer: CVPixelBuffer,
+                           width: Int,
+                           device: MTLDevice) -> MTLTexture? {
+        let src = CIImage(cvPixelBuffer: pixelBuffer)
+        let scale = CGFloat(width) / src.extent.width
+        let scaled = src.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let w = Int(scaled.extent.width.rounded())
+        let h = Int(scaled.extent.height.rounded())
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: w, height: h, mipmapped: false)
+        desc.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        guard let tex = device.makeTexture(descriptor: desc),
+              let queue = device.makeCommandQueue(),
+              let cb = queue.makeCommandBuffer()
+        else { return nil }
+
+        renderContext.render(scaled, to: tex, commandBuffer: cb,
+                             bounds: scaled.extent, colorSpace: colorSpace)
+        cb.commit()
+        cb.waitUntilCompleted()
+        return tex
     }
 }

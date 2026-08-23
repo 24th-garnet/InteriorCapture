@@ -12,7 +12,10 @@ checkpoints/
 outputs/
 
 # ---- 外部リポジトリ ----
-vendor/
+# ルート直下の vendor/ のみ。capture/Vendor/xatlas はアプリのビルドに必須なので
+# 追跡する（macOS のファイルシステムは大文字小文字を区別しないため、
+# 先頭の / がないと capture/Vendor/ にも一致してしまう）。
+/vendor/
 
 # ---- Python ----
 .venv/

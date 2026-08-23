@@ -115,13 +115,29 @@ struct CaptureView: View {
                 recordButton(title: "停止", color: .white) { capture.stopRecording() }
             }
         case .finishing:
-            ProgressView("書き出し中")
-                .padding()
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            VStack(spacing: 8) {
+                if let p = capture.bakeProgress {
+                    ProgressView(value: p) {
+                        Text("テクスチャを焼き込み中")
+                    } currentValueLabel: {
+                        Text("\(Int(p * 100))%").font(.system(.caption, design: .monospaced))
+                    }
+                    .frame(width: 260)
+                } else {
+                    ProgressView("書き出し中")
+                }
+            }
+            .padding()
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
         case .finished(let url):
             VStack(spacing: 8) {
                 Text("保存しました").font(.headline)
                 Text(url.lastPathComponent).font(.system(.caption, design: .monospaced))
+                if let summary = capture.bakeSummary {
+                    Text("mesh.glb: \(summary)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.green)
+                }
                 Text("ファイル App の「このiPad内」から Mac にコピーしてください")
                     .font(.caption2).foregroundStyle(.secondary)
                 Button("閉じる") { capture.acknowledge() }.buttonStyle(.borderedProminent)

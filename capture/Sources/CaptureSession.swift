@@ -32,6 +32,9 @@ final class CaptureSession: NSObject, ObservableObject {
     @Published private(set) var lastRejection: String = ""
     @Published private(set) var thermal: ProcessInfo.ThermalState = .nominal
     @Published private(set) var probe: DeviceProbe.Report?
+    /// オンデバイス焼き込みの進捗（0..1）。nil なら実行していない。
+    @Published private(set) var bakeProgress: Double?
+    @Published private(set) var bakeSummary: String?
 
     /// A12Z の発熱で長時間の撮影は品質が落ちる。Scaniverse の docs 上限 5 分より保守的に切る。
     /// 公式サポートも「1〜3 分がベスト、それ以上は品質が落ちる」としている。
@@ -52,6 +55,11 @@ final class CaptureSession: NSObject, ObservableObject {
     private var videoFormat: ARConfiguration.VideoFormat?
     private var deviceReport: DeviceProbe.Report?
     private weak var session: ARSession?
+
+    /// 焼き込み用のフレーム保持と GPU 実装。撮影と並行して溜める。
+    private let encoder = ImageEncoder()
+    private var frameStore: FrameStore?
+    private var baker: OnDeviceBaker?
 
     // MARK: - セットアップ
 
@@ -114,6 +122,13 @@ final class CaptureSession: NSObject, ObservableObject {
                 self.selector.reset()
                 self.startTime = nil
                 self.isRecording = true
+                Task { @MainActor in
+                    if let device = MTLCreateSystemDefaultDevice() {
+                        let store = FrameStore(device: device)
+                        self.baker = try? OnDeviceBaker()
+                        self.queue.async { self.frameStore = store }
+                    }
+                }
                 self.publish { $0.state = .recording; $0.acceptedCount = 0; $0.elapsed = 0 }
             } catch {
                 self.publish { $0.state = .failed(error.localizedDescription) }
@@ -137,6 +152,12 @@ final class CaptureSession: NSObject, ObservableObject {
                 try? writer.writeMesh(anchors: anchors)
                 try writer.finish(probe: report, format: format, gravity: SIMD3<Float>(0, -1, 0))
                 let url = writer.bundleURL
+
+                // Tier 1: テクスチャ付きメッシュを iPad 上で生成する。
+                // 3DGS は Mac 側に残す（A12Z では非現実的で、Scaniverse 自身も
+                // この世代では splat を提供していない）。
+                self.bakeOnDevice(anchors: anchors, bundleURL: url)
+
                 self.publish { $0.state = .finished(url) }
             } catch {
                 self.publish { $0.state = .failed(error.localizedDescription) }
@@ -181,6 +202,13 @@ extension CaptureSession: ARSessionDelegate {
         case .accept:
             do {
                 try writer.write(frame: frame, metrics: metrics)
+                // 焼き込み用にも保持する。ディスクの JPEG を読み直すと
+                // 605 枚のデコードだけで数十秒かかるため、GPU 上に持っておく。
+                if let store = frameStore {
+                    let f = frame
+                    let sharp = Float(metrics.sharpness)
+                    Task { @MainActor in store.append(frame: f, sharpness: sharp, encoder: self.encoder) }
+                }
             } catch {
                 publish { $0.state = .failed(error.localizedDescription) }
                 isRecording = false
@@ -203,5 +231,82 @@ extension CaptureSession: ARSessionDelegate {
                 stopRecording()
             }
         }
+    }
+}
+
+
+// MARK: - オンデバイス焼き込み
+
+extension CaptureSession {
+
+    /// ARKit メッシュと保持したキーフレームから GLB を作る。
+    ///
+    /// 失敗しても撮影データ（MDR バンドル）は既に書き終えているので、
+    /// ここでの例外は成果物を失わせない。Mac 側で焼き直せる。
+    fileprivate func bakeOnDevice(anchors: [ARMeshAnchor], bundleURL: URL) {
+        guard let baker, let store = frameStore else { return }
+
+        let frames = MainActor.assumeIsolatedSafely { store.frames }
+        guard !frames.isEmpty else { return }
+
+        var vertices: [SIMD3<Float>] = []
+        var indices: [UInt32] = []
+        for anchor in anchors {
+            let base = UInt32(vertices.count)
+            let g = anchor.geometry
+            let t = anchor.transform
+            for i in 0..<g.vertices.count {
+                let off = g.vertices.offset + g.vertices.stride * i
+                let local = g.vertices.buffer.contents().advanced(by: off)
+                    .assumingMemoryBound(to: SIMD3<Float>.self).pointee
+                let w = t * SIMD4<Float>(local.x, local.y, local.z, 1)
+                vertices.append(SIMD3(w.x, w.y, w.z))
+            }
+            let fb = g.faces
+            let raw = fb.buffer.contents().assumingMemoryBound(to: Int32.self)
+            for f in 0..<fb.count {
+                let o = f * fb.indexCountPerPrimitive
+                indices.append(base + UInt32(raw[o]))
+                indices.append(base + UInt32(raw[o + 1]))
+                indices.append(base + UInt32(raw[o + 2]))
+            }
+        }
+        guard vertices.count > 2, indices.count > 2 else { return }
+
+        publish { $0.bakeProgress = 0 }
+        do {
+            let result = try MainActor.assumeIsolatedSafely {
+                try baker.bake(meshVertices: vertices, meshIndices: indices, frames: frames) { n, total in
+                    self.publish { $0.bakeProgress = Double(n) / Double(total) }
+                }
+            }
+            let glb = bundleURL.appendingPathComponent("mesh.glb")
+            try GLBWriter.write(vertices: result.vertices, uvs: result.uvs, indices: result.indices,
+                                textureRGBA: result.texture, atlasSize: result.atlasSize, to: glb)
+            let summary = String(format: "%.0f 秒 / %d 三角形 / 未着色 %.1f%%",
+                                 result.elapsed, result.indices.count / 3,
+                                 result.unfilledRatio * 100)
+            publish { $0.bakeProgress = nil; $0.bakeSummary = summary }
+        } catch {
+            publish { $0.bakeProgress = nil; $0.bakeSummary = "焼き込み失敗: \(error.localizedDescription)" }
+        }
+        MainActor.assumeIsolatedSafely { store.reset() }
+    }
+}
+
+/// `queue` から @MainActor の状態へ触れるための同期ヘルパ。
+///
+/// FrameStore と OnDeviceBaker は Metal 資源を持つため @MainActor に置いているが、
+/// 焼き込み自体は撮影完了後の一括処理で、UI を止めても実害がない。
+private func MainActor_assumeIsolatedSafely<T>(_ body: @MainActor () throws -> T) rethrows -> T {
+    if Thread.isMainThread {
+        return try MainActor.assumeIsolated { try body() }
+    }
+    return try DispatchQueue.main.sync { try MainActor.assumeIsolated { try body() } }
+}
+
+extension MainActor {
+    static func assumeIsolatedSafely<T>(_ body: @MainActor () throws -> T) rethrows -> T {
+        try MainActor_assumeIsolatedSafely(body)
     }
 }

@@ -12,6 +12,9 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - path: Vendor/xatlas
+        # xatlas は依存のない単一ファイルの C++。警告は抑える（自前のコードではない）
+        compilerFlags: "-w"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.garnet.madoriba.capture
@@ -22,6 +25,11 @@ targets:
         # XcodeGen の既定は CODE_SIGN_IDENTITY = "iPhone Developer" だが、
         # これは Xcode 11 世代で非推奨になった旧称。現行は "Apple Development"。
         # 旧称のままだと署名 UI が正しく動かず、Team が選べないことがある。
+        # Objective-C++ ブリッジ経由で C++ の xatlas を使う
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridge/BridgingHeader.h
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/xatlas"
         CODE_SIGN_IDENTITY: "Apple Development"
         CODE_SIGN_STYLE: Automatic
         # Xcode の GUI で選んだ Team は .xcodeproj に書かれるため
