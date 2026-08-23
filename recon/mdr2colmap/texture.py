@@ -51,55 +51,63 @@ def _rasterize_atlas(
 
     戻り値は (world 座標 (H,W,3), 法線 (H,W,3), 有効マスク (H,W))。
 
-    テクセル中心は (i+0.5)/size。三角形ごとにバウンディングボックスを回し、
-    重心座標で内外判定と補間を行う。
+    三角形ごとに Python ループを回すと、1 三角形あたりの実作業が
+    十数テクセルしかないのに Python のオーバーヘッドが支配的になる
+    （173K 三角形で 16 秒）。バウンディングボックスの大きさで束ねて
+    一括処理する。
     """
     pos = np.zeros((size, size, 3), np.float32)
     nrm = np.zeros((size, size, 3), np.float32)
     mask = np.zeros((size, size), bool)
 
-    uv_px = uvs * size
-    tri_uv = uv_px[faces]          # (M,3,2)
-    tri_xyz = verts[faces]         # (M,3,3)
+    uv_px = (uvs * size).astype(np.float32)
+    tri_uv = uv_px[faces]
+    tri_xyz = verts[faces].astype(np.float32)
 
     e1 = tri_xyz[:, 1] - tri_xyz[:, 0]
     e2 = tri_xyz[:, 2] - tri_xyz[:, 0]
     face_n = np.cross(e1, e2)
     face_n /= np.maximum(np.linalg.norm(face_n, axis=1), 1e-12)[:, None]
 
-    lo = np.floor(tri_uv.min(axis=1)).astype(np.int64)
-    hi = np.ceil(tri_uv.max(axis=1)).astype(np.int64)
-    lo = np.clip(lo, 0, size - 1)
-    hi = np.clip(hi, 0, size)
+    lo = np.clip(np.floor(tri_uv.min(axis=1)).astype(np.int32), 0, size - 1)
+    hi = np.clip(np.ceil(tri_uv.max(axis=1)).astype(np.int32), 1, size)
+    span = np.maximum(hi - lo, 1)
+    extent = span.max(axis=1)
 
-    for f in range(len(faces)):
-        x0, y0 = lo[f]
-        x1, y1 = hi[f]
-        if x1 <= x0 or y1 <= y0:
+    a = tri_uv[:, 0]; b = tri_uv[:, 1]; c = tri_uv[:, 2]
+    det = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
+    valid = np.abs(det) > 1e-9
+
+    # 同じ窓サイズの三角形をまとめて処理する
+    for k in np.unique(extent[valid]):
+        sel = np.nonzero(valid & (extent == k))[0]
+        if not len(sel):
             continue
+        # (T, k, k) の格子。k は大半が数テクセルなのでメモリは小さい
+        off = np.arange(k, dtype=np.float32) + 0.5
+        gx = lo[sel, 0][:, None, None] + off[None, None, :]
+        gy = lo[sel, 1][:, None, None] + off[None, :, None]
 
-        a, b, c = tri_uv[f]
-        det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
-        if abs(det) < 1e-12:
-            continue
-
-        xs = np.arange(x0, x1) + 0.5
-        ys = np.arange(y0, y1) + 0.5
-        gx, gy = np.meshgrid(xs, ys)
-
-        w0 = ((b[1] - c[1]) * (gx - c[0]) + (c[0] - b[0]) * (gy - c[1])) / det
-        w1 = ((c[1] - a[1]) * (gx - c[0]) + (a[0] - c[0]) * (gy - c[1])) / det
+        aa, bb, cc = a[sel], b[sel], c[sel]
+        dd = det[sel][:, None, None]
+        w0 = ((bb[:, 1] - cc[:, 1])[:, None, None] * (gx - cc[:, 0][:, None, None])
+              + (cc[:, 0] - bb[:, 0])[:, None, None] * (gy - cc[:, 1][:, None, None])) / dd
+        w1 = ((cc[:, 1] - aa[:, 1])[:, None, None] * (gx - cc[:, 0][:, None, None])
+              + (aa[:, 0] - cc[:, 0])[:, None, None] * (gy - cc[:, 1][:, None, None])) / dd
         w2 = 1.0 - w0 - w1
-        # 継ぎ目のにじみを防ぐため、わずかに外側まで塗る
+
         inside = (w0 >= -0.002) & (w1 >= -0.002) & (w2 >= -0.002)
+        inside &= (gx < size) & (gy < size)
         if not inside.any():
             continue
 
-        yy, xx = np.nonzero(inside)
-        py, px = yy + y0, xx + x0
-        bary = np.stack([w0[inside], w1[inside], w2[inside]], axis=1)
-        pos[py, px] = bary @ tri_xyz[f]
-        nrm[py, px] = face_n[f]
+        ti, yi, xi = np.nonzero(inside)
+        px = (lo[sel, 0][ti] + xi).astype(np.int32)
+        py = (lo[sel, 1][ti] + yi).astype(np.int32)
+        bary = np.stack([w0[ti, yi, xi], w1[ti, yi, xi], w2[ti, yi, xi]], axis=1)
+        tri = tri_xyz[sel][ti]
+        pos[py, px] = np.einsum("ij,ijk->ik", bary, tri)
+        nrm[py, px] = face_n[sel][ti]
         mask[py, px] = True
 
     return pos, nrm, mask
@@ -112,6 +120,8 @@ def bake(
     conf_min: int = 2,
     depth_tolerance: float = 0.08,
     max_frames: int | None = None,
+    view_exponent: float = 2.0,
+    min_facing: float = 0.15,
     progress=None,
 ) -> TexturedMesh:
     """メッシュにテクスチャを焼き込む。"""
@@ -135,55 +145,72 @@ def bake(
     sharp = np.array([f.sharpness or 1.0 for f in frames], float)
     sharp_norm = sharp / max(np.median(sharp), 1e-6)
 
-    acc_flat = np.zeros((len(flat_pos), 3), np.float64)
-    w_flat = np.zeros(len(flat_pos), np.float64)
+    acc_flat = np.zeros((len(flat_pos), 3), np.float32)
+    w_flat = np.zeros(len(flat_pos), np.float32)
+
+    flat_pos32 = flat_pos.astype(np.float32)
+    flat_nrm32 = flat_nrm.astype(np.float32)
 
     for n, frame in enumerate(frames):
         w2c = arkit_c2w_to_world2cam(frame.c2w_arkit)
-        cam = flat_pos @ w2c[:3, :3].T + w2c[:3, 3]
-        z = cam[:, 2]
-        front = z > 0.05
-        if not front.any():
+        R = w2c[:3, :3].astype(np.float32)
+        t = w2c[:3, 3].astype(np.float32)
+        k = frame.intrinsics
+
+        # 各段階で候補を絞ってから次の演算に進む。全テクセル(数百万)に対して
+        # 最後まで演算し続けると、実際の作業量の数倍のコストがかかる。
+        z = flat_pos32 @ R[2] + t[2]
+        cand = np.nonzero(z > 0.05)[0]
+        if not len(cand):
             continue
 
-        k = frame.intrinsics
-        u = k.fx * cam[:, 0] / np.where(front, z, 1) + k.cx
-        v = k.fy * cam[:, 1] / np.where(front, z, 1) + k.cy
-        inside = front & (u >= 0) & (u < vw) & (v >= 0) & (v < vh)
-        if not inside.any():
+        p_c = flat_pos32[cand]
+        zc = z[cand]
+        xc = p_c @ R[0] + t[0]
+        yc = p_c @ R[1] + t[1]
+        u = k.fx * xc / zc + k.cx
+        v = k.fy * yc / zc + k.cy
+        keep = (u >= 0) & (u < vw) & (v >= 0) & (v < vh)
+        if not keep.any():
             continue
+        cand = cand[keep]
+        u, v, zc = u[keep], v[keep], zc[keep]
+        xc, yc = xc[keep], yc[keep]
 
         # 正対度。カメラから見て面が寝ているほど信用しない
-        view_dir = cam / np.maximum(np.linalg.norm(cam, axis=1), 1e-9)[:, None]
-        n_cam = flat_nrm @ w2c[:3, :3].T
-        facing = -np.sum(n_cam * view_dir, axis=1)
-        ok = inside & (facing > 0.15)
-        if not ok.any():
+        inv = 1.0 / np.sqrt(xc * xc + yc * yc + zc * zc)
+        n_c = flat_nrm32[cand]
+        nx = n_c @ R[0]; ny = n_c @ R[1]; nz = n_c @ R[2]
+        facing = -(nx * xc + ny * yc + nz * zc) * inv
+        keep = facing > min_facing
+        if not keep.any():
             continue
+        cand = cand[keep]
+        u, v, zc, facing = u[keep], v[keep], zc[keep], facing[keep]
 
         # LiDAR 深度で遮蔽を判定する。メッシュを深度レンダリングせずに済む。
         depth = bundle.depth(frame.index)
         conf = bundle.confidence(frame.index)
-        du = np.clip((u[ok] * dw / vw).astype(np.int64), 0, dw - 1)
-        dv = np.clip((v[ok] * dh / vh).astype(np.int64), 0, dh - 1)
+        du = (u * (dw / vw)).astype(np.int32)
+        dv = (v * (dh / vh)).astype(np.int32)
+        np.clip(du, 0, dw - 1, out=du)
+        np.clip(dv, 0, dh - 1, out=dv)
         measured = depth[dv, du]
-        visible = (
-            (conf[dv, du] >= conf_min)
-            & np.isfinite(measured)
-            & (np.abs(measured - z[ok]) < depth_tolerance)
-        )
-        if not visible.any():
+        vis = (conf[dv, du] >= conf_min) & np.isfinite(measured) & (np.abs(measured - zc) < depth_tolerance)
+        if not vis.any():
             continue
+        cand = cand[vis]
+        u, v, zc, facing = u[vis], v[vis], zc[vis], facing[vis]
 
-        idx = np.nonzero(ok)[0][visible]
         img = np.asarray(Image.open(bundle.image_path(frame.index)).convert("RGB"))
-        iu = np.clip(u[idx].astype(np.int64), 0, vw - 1)
-        iv = np.clip(v[idx].astype(np.int64), 0, vh - 1)
+        iu = u.astype(np.int32); iv = v.astype(np.int32)
+        np.clip(iu, 0, vw - 1, out=iu); np.clip(iv, 0, vh - 1, out=iv)
 
-        # 正対度^2 / 距離 * シャープネス
-        w = (facing[idx] ** 2) / np.maximum(z[idx], 0.2) * sharp_norm[n]
-        acc_flat[idx] += img[iv, iu].astype(np.float64) * w[:, None]
-        w_flat[idx] += w
+        # view_exponent を上げるほど「最良の1視点」に近づき、鮮鋭になる。
+        # 低いと多視点の平均でボケるが、視点境界の継ぎ目は目立たなくなる。
+        w = (facing ** view_exponent) / np.maximum(zc, 0.2) * sharp_norm[n]
+        np.add.at(acc_flat, cand, img[iv, iu].astype(np.float32) * w[:, None])
+        np.add.at(w_flat, cand, w)
 
         if progress:
             progress(n + 1, len(frames))

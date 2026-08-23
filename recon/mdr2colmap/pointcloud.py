@@ -157,3 +157,30 @@ def build(
     if denoise:
         xyz, rgb = remove_statistical_outliers(xyz, rgb)
     return xyz, rgb
+
+
+def build_with_normals(
+    bundle: Bundle,
+    mesh,
+    frames: list[Frame],
+    conf_min: int,
+    voxel: float = 0.02,
+    depth_range: tuple[float, float] = (0.1, 5.0),
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """点群に加えて、各点の法線をメッシュから拾う。
+
+    法線は 3DGS を「面に貼り付いた薄い楕円」で初期化するために使う。
+    深度の非投影だけでは法線が得られない（近傍から推定はできるがノイズが乗る）ので、
+    ARKit が出した面の法線を最近傍探索で引き当てる。
+    """
+    from scipy.spatial import cKDTree
+
+    xyz, rgb = build(bundle, frames, conf_min, voxel, depth_range, denoise=True)
+    if not len(xyz):
+        return xyz, rgb, np.zeros((0, 3), np.float32)
+
+    centroids = mesh.face_centroids
+    normals = mesh.face_normals
+    tree = cKDTree(centroids)
+    _, idx = tree.query(xyz, k=1)
+    return xyz, rgb, normals[idx].astype(np.float32)

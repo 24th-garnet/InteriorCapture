@@ -219,3 +219,76 @@ def test_reprojection_check_detects_a_wrong_flip(synthetic: Bundle, monkeypatch)
     monkeypatch.setattr(colmap_mod, "FLIP", np.eye(4))
     r = check_pair(synthetic, synthetic.frames[0], synthetic.frames[2], conf_min=2)
     assert not r.ok, "FLIP を恒等行列にしても検証が通ってしまいました"
+
+
+# -- 向き付き初期化 ----------------------------------------------------------
+
+
+def test_oriented_init_quaternion_aligns_normal(tmp_path):
+    """書き出したクォータニオンが、z 軸を実際に法線へ写すこと。
+
+    3DGS のガウシアンはローカル z 軸が第3スケール軸に対応する。
+    法線方向を薄くするので、この回転が誤っていると「面に平行な薄い円盤」ではなく
+    「面を貫く薄い板」になり、初期化が逆効果になる。
+    """
+    import numpy as np
+
+    from mdr2colmap.colmap import qvec_to_rotmat, write_points3d_ply_oriented
+
+    rng = np.random.default_rng(0)
+    normals = rng.normal(size=(200, 3))
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+    # 真後ろ向き（縮退ケース）も混ぜる
+    normals[0] = [0.0, 0.0, -1.0]
+    normals[1] = [0.0, 0.0, 1.0]
+
+    xyz = rng.normal(size=(200, 3))
+    rgb = rng.integers(0, 256, size=(200, 3))
+    p = tmp_path / "init.ply"
+    write_points3d_ply_oriented(p, xyz, rgb, normals, spacing=0.02)
+
+    got = _read_oriented_ply(p)
+    assert len(got) == 200
+
+    for i in (0, 1, 7, 55, 199):
+        q = np.array([got["rot_0"][i], got["rot_1"][i], got["rot_2"][i], got["rot_3"][i]])
+        R = qvec_to_rotmat(q)
+        z_mapped = R @ np.array([0.0, 0.0, 1.0])
+        assert np.allclose(z_mapped, normals[i], atol=1e-5), (
+            f"i={i}: z 軸が {z_mapped} に写り、法線 {normals[i]} と一致しません"
+        )
+
+
+def test_oriented_init_is_flat_along_the_normal(tmp_path):
+    """法線方向のスケールだけが薄いこと。"""
+    import numpy as np
+
+    from mdr2colmap.colmap import write_points3d_ply_oriented
+
+    n = np.tile([0.0, 1.0, 0.0], (10, 1))
+    p = tmp_path / "init.ply"
+    write_points3d_ply_oriented(
+        p, np.zeros((10, 3)), np.full((10, 3), 128), n, spacing=0.02, thickness_ratio=0.2
+    )
+    got = _read_oriented_ply(p)
+    s = np.exp(np.stack([got["scale_0"], got["scale_1"], got["scale_2"]], 1))
+    assert np.allclose(s[:, 0], 0.02, rtol=1e-4)
+    assert np.allclose(s[:, 1], 0.02, rtol=1e-4)
+    assert np.allclose(s[:, 2], 0.004, rtol=1e-4)
+
+
+def _read_oriented_ply(path):
+    """テスト用の最小 PLY リーダ。"""
+    import re
+
+    import numpy as np
+
+    with open(path, "rb") as fh:
+        head = b""
+        while b"end_header" not in head:
+            head += fh.readline()
+        txt = head.decode("ascii")
+        n = int(re.search(r"element vertex (\d+)", txt).group(1))
+        names = re.findall(r"property float (\w+)", txt)
+        dt = np.dtype([(nm, "<f4") for nm in names])
+        return np.frombuffer(fh.read(n * dt.itemsize), dtype=dt, count=n)

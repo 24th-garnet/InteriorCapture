@@ -192,3 +192,85 @@ def write_points3d_ply(path: Path, xyz: np.ndarray, rgb: np.ndarray) -> None:
     with path.open("wb") as fh:
         fh.write(header.encode("ascii"))
         fh.write(verts.tobytes())
+
+
+def write_points3d_ply_oriented(
+    path: Path,
+    xyz: np.ndarray,
+    rgb: np.ndarray,
+    normals: np.ndarray,
+    spacing: float,
+    thickness_ratio: float = 0.2,
+    opacity: float = 0.6,
+) -> None:
+    """面に沿った平たいガウシアンとして初期点群を書く。
+
+    通常の 3DGS は位置と色だけを与え、スケールは近傍距離から等方的に、
+    回転は単位クォータニオンで始める。そこから densification と最適化で
+    「面に貼り付いた薄い楕円」に育てるまでに多くの iteration を要する。
+
+    LiDAR メッシュがあれば法線が既知なので、**最初から面に沿った向きと
+    厚みを与えられる**。最適化の初期状態が解にずっと近くなる。
+
+    Brush は points3D.ply の scale_0..2 / rot_0..3 / opacity を読むため
+    （brush-serde の import が has_property で判定）、学習器側の改造は要らない。
+
+    - スケールは面内 2 軸を spacing 相当、法線方向を thickness_ratio 倍の薄さに
+    - 回転は法線を z 軸に合わせるクォータニオン
+    - 値は 3DGS の慣習に合わせ、スケールは log、不透明度は logit で格納する
+    """
+    n = len(xyz)
+    nrm = np.asarray(normals, dtype=np.float64)
+    nrm = nrm / np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-12)
+
+    # 法線を z 軸に写す回転。z=(0,0,1) から nrm への最短回転クォータニオン。
+    z = np.zeros_like(nrm); z[:, 2] = 1.0
+    axis = np.cross(z, nrm)
+    dot = np.clip(nrm[:, 2], -1.0, 1.0)
+    q = np.empty((n, 4), np.float64)
+    q[:, 0] = 1.0 + dot                      # w
+    q[:, 1:] = axis
+    # 真後ろ向き（dot ≈ -1）は軸が定まらないので x 軸まわりの 180 度に落とす
+    flip = dot < -1.0 + 1e-6
+    if flip.any():
+        q[flip] = np.array([0.0, 1.0, 0.0, 0.0])
+    q /= np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-12)
+
+    log_s = np.empty((n, 3), np.float64)
+    log_s[:, 0] = np.log(spacing)
+    log_s[:, 1] = np.log(spacing)
+    log_s[:, 2] = np.log(spacing * thickness_ratio)
+    raw_op = np.full(n, np.log(opacity / (1.0 - opacity)))
+
+    # SH の 0 次係数。3DGS の慣習に合わせた変換。
+    C0 = 0.28209479177387814
+    f_dc = (np.asarray(rgb, np.float64) / 255.0 - 0.5) / C0
+
+    header = (
+        "ply\nformat binary_little_endian 1.0\n"
+        f"element vertex {n}\n"
+        "property float x\nproperty float y\nproperty float z\n"
+        "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n"
+        "property float opacity\n"
+        "property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+        "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+        "end_header\n"
+    )
+    fields = [("x","<f4"),("y","<f4"),("z","<f4"),
+              ("f_dc_0","<f4"),("f_dc_1","<f4"),("f_dc_2","<f4"),
+              ("opacity","<f4"),
+              ("scale_0","<f4"),("scale_1","<f4"),("scale_2","<f4"),
+              ("rot_0","<f4"),("rot_1","<f4"),("rot_2","<f4"),("rot_3","<f4")]
+    v = np.empty(n, dtype=fields)
+    p3 = np.asarray(xyz, np.float32)
+    v["x"], v["y"], v["z"] = p3[:, 0], p3[:, 1], p3[:, 2]
+    for i in range(3):
+        v[f"f_dc_{i}"] = f_dc[:, i]
+        v[f"scale_{i}"] = log_s[:, i]
+    v["opacity"] = raw_op
+    for i in range(4):
+        v[f"rot_{i}"] = q[:, i]
+
+    with path.open("wb") as fh:
+        fh.write(header.encode("ascii"))
+        fh.write(v.tobytes())
