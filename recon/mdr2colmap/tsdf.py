@@ -154,3 +154,30 @@ def fuse(
     # (z,y,x) 順で返るので xyz に直し、world 座標へ
     world = lo + (verts[:, ::-1] + 0.5) * voxel
     return FusionResult(world, faces.astype(np.int64), voxel, n, len(frames))
+
+
+def decimate(mesh: Mesh, voxel: float) -> Mesh:
+    """ボクセルクラスタリングでメッシュを間引く。
+
+    TSDF は 1cm ボクセルで 400 万面規模を吐くので、そのままでは
+    UV 展開も焼き込みも現実的でない。
+
+    頂点キーの一意化に `np.unique(axis=0)` を使うと、行を lexsort するため
+    200 万頂点で数十分かかる。整数キーを 1 次元に畳んでから unique すれば
+    桁違いに速い（pointcloud.voxel_downsample と同じ手）。
+    """
+    keys = np.floor(mesh.vertices / voxel).astype(np.int64)
+    keys -= keys.min(axis=0)
+    dims = keys.max(axis=0) + 1
+    flat = keys[:, 0] + dims[0] * (keys[:, 1] + dims[1] * keys[:, 2])
+
+    _, inverse, counts = np.unique(flat, return_inverse=True, return_counts=True)
+    n = len(counts)
+    verts = np.zeros((n, 3))
+    for c in range(3):
+        verts[:, c] = np.bincount(inverse, weights=mesh.vertices[:, c], minlength=n) / counts
+
+    faces = inverse[mesh.faces]
+    # 潰れて縮退した三角形を落とす
+    keep = (faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 0] != faces[:, 2])
+    return Mesh(vertices=verts, faces=faces[keep])
