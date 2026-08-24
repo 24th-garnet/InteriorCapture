@@ -6,7 +6,11 @@ import SplatIO
 import simd
 
 /// MetalSplatter を使って station 視点から 3DGS を描画する。
-@MainActor
+///
+/// - Important: クラス全体を `@MainActor` にしてはいけない。
+///   PLY の解析（50万 splat で 112MB）がメインスレッドを占有し、
+///   ウィンドウが一切描画されなくなる。読み込みは背景で行い、
+///   UI に触るところだけ MainActor に渡す。
 final class TourRenderer: NSObject, MTKViewDelegate {
 
     private let device: MTLDevice
@@ -40,16 +44,28 @@ final class TourRenderer: NSObject, MTKViewDelegate {
 
         let reader = try AutodetectSceneReader(splatURL)
         var points: [SplatPoint] = []
+        var lastReport = 0
         for try await batch in try await reader.read() {
             points.append(contentsOf: batch)
-            onStatus?("読み込み中 \(points.count) splat")
+            // 進捗はバッチごとに出さない。50万 splat では MainActor への
+            // Task が大量に積まれて、それ自体が読み込みより重くなる。
+            if points.count - lastReport > 50_000 {
+                lastReport = points.count
+                report("読み込み中 \(points.count / 1000)k splat")
+            }
         }
         guard !points.isEmpty else { throw TourError.emptyScene }
 
+        report("GPU へ転送中 \(points.count / 1000)k splat")
         let chunk = try SplatChunk(device: device, from: points)
         _ = await renderer.addChunk(chunk)
         splatRenderer = renderer
-        onStatus?("\(points.count) splat")
+        report("\(points.count / 1000)k splat")
+    }
+
+    private func report(_ text: String) {
+        let handler = onStatus
+        Task { @MainActor in handler?(text) }
     }
 
     // MARK: - MTKViewDelegate

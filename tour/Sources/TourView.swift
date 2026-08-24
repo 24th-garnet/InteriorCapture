@@ -120,9 +120,14 @@ struct TourView: View {
         }
         do {
             let r = try TourRenderer(device: device, camera: camera)
-            r.onStatus = { s in Task { @MainActor in status = s } }
+            r.onStatus = { s in status = s }
             renderer = r
-            try await r.load(splatURL: splatURL)
+            status = "読み込み開始"
+            // 読み込みは背景で走らせる。ここで await すると
+            // ウィンドウが出るまでの時間が読み込み時間になってしまう。
+            try await Task.detached(priority: .userInitiated) {
+                try await r.load(splatURL: splatURL)
+            }.value
         } catch {
             status = "エラー: \(error.localizedDescription)"
         }

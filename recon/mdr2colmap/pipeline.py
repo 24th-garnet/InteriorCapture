@@ -14,12 +14,18 @@
   テクスチャ付きメッシュは端末側（79 秒）の役割として残す。
 
 - **ポーズ精密化は行う。** 12 秒で系統的偏りを 10.4→3.7mm に減らせる。
+
+- **学習解像度は 640 に固定する。** 実測では 960 で +0.21 dB、1920 で +0.42 dB
+  改善するが、960 は 5 分要件を 53 秒超過する。実機のツアービューアで
+  動かして確認した結果、640 で品質は十分と判断した。
+  高解像度への対応は後付けの課題として切り離す。
 """
 
 from __future__ import annotations
 
 import copy
 import dataclasses
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +35,14 @@ import numpy as np
 from . import colmap, pointcloud, refine, tour
 from .mdr import Bundle
 from .mesh import read_ply_mesh
+
+#: 学習解像度。本アプリはこの 1 通りのみに対応する（モジュール冒頭の説明を参照）。
+TRAIN_RESOLUTION = 640
+#: ガウシアン数の上限。実測で 25 万まで落としても PSNR 差 0.04 dB・
+#: 目視で区別できず 81 秒速いが、既定は動作確認済みの 50 万に置く。
+MAX_SPLATS = 500_000
+#: iteration。5K では 0.97 dB 落ちるのでここが下限。
+TRAIN_ITERS = 10_000
 
 
 @dataclass
@@ -42,6 +56,7 @@ class Stage:
 class PipelineResult:
     scene_dir: Path
     tour_path: Path
+    splat_path: Path | None = None
     stages: list[Stage] = field(default_factory=list)
 
     @property
@@ -116,3 +131,64 @@ def run(
     log(f"  station 抽出 {stages[-1].seconds:.1f}s  ({len(tr.stations)} 箇所)")
 
     return PipelineResult(scene_dir=out, tour_path=tour_path, stages=stages)
+
+
+def train(
+    scene_dir: str | Path,
+    brush: str | Path,
+    max_splats: int = MAX_SPLATS,
+    iterations: int = TRAIN_ITERS,
+    eval_split_every: int = 50,
+    log=print,
+) -> tuple[Path | None, float]:
+    """Brush で 3DGS を学習する。戻り値は (splat の PLY, 所要秒)。
+
+    解像度は `TRAIN_RESOLUTION` に固定する。引数で変えられるようにしていないのは、
+    5 分要件の下では 640 以外を選ぶ理由がないため（モジュール冒頭の説明を参照）。
+    """
+    import subprocess
+
+    scene = Path(scene_dir)
+    gs = scene / "gs"
+    if gs.exists():
+        shutil.rmtree(gs)
+
+    cmd = [
+        str(brush), str(scene),
+        "--max-resolution", str(TRAIN_RESOLUTION),
+        "--max-splats", str(max_splats),
+        "--total-train-iters", str(iterations),
+        "--eval-split-every", str(eval_split_every),
+        "--eval-every", str(iterations),
+        "--eval-save-to-disk",
+        "--export-every", str(iterations),
+        "--export-path", str(gs) + "/",
+    ]
+    t = time.time()
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    elapsed = time.time() - t
+
+    plys = sorted(gs.glob("*.ply")) if gs.exists() else []
+    if not plys:
+        log(f"  3DGS 学習が出力を残しませんでした（{elapsed:.0f}s）")
+        if proc.stderr.strip():
+            log("  " + proc.stderr.strip().splitlines()[-1])
+        return None, elapsed
+
+    log(f"  3DGS 学習 {elapsed:.0f}s  ({plys[0].name})")
+    return plys[0], elapsed
+
+
+def run_all(
+    bundle_path: str | Path,
+    output: str | Path,
+    brush: str | Path,
+    log=print,
+    **kwargs,
+) -> PipelineResult:
+    """前処理から 3DGS 学習まで通しで実行する。"""
+    result = run(bundle_path, output, log=log, **kwargs)
+    splat, seconds = train(result.scene_dir, brush, log=log)
+    result.splat_path = splat
+    result.stages.append(Stage("3DGS 学習", seconds, splat.name if splat else "失敗"))
+    return result

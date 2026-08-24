@@ -26,14 +26,33 @@ mdr2colmap verify room-xxxx.mdr --overlay /tmp/overlay
 # 2. COLMAP モデル + 初期点群を書き出す
 mdr2colmap convert room-xxxx.mdr -o scene
 
-# 3. 学習（Brush 推奨設定。実測 250 秒 / PSNR 23.3）
-../vendor/brush/target/release/brush scene \
-  --total-train-iters 10000 --max-splats 500000 --max-resolution 640 \
-  --export-every 10000 --export-path out/ --export-name splat_{iter}.ply
+# 3. サーバ側パイプライン（前処理 + 3DGS を一括、実測 282 秒）
+mdr2colmap server room-xxxx.mdr -o scene/ \
+  --brush ../vendor/brush/target/release/brush
 
 # 4. 間取り（メッシュから壁線・寸法を抽出）
 mdr2colmap floorplan room-xxxx.mdr -o plan/
+
+# 5. ツアーを開く
+open -n -a MadoribaTour.app --args scene/tour.json scene/gs/*.ply
 ```
+
+## 学習解像度は 640 固定
+
+本アプリは **640 のみに対応する**。実測では 960 で +0.21 dB、1920 で +0.42 dB
+改善するが、960 は 5 分要件を 53 秒超過する。ツアービューアで実際に動かして
+確認した結果、640 で品質は十分と判断した。高解像度への対応は後付けの課題として
+切り離している。
+
+| 学習解像度 | 時間 | PSNR | 5 分要件 |
+|---|---|---|---|
+| **640（採用）** | **262 秒** | 22.47 | ○ |
+| 960 | 333 秒 | 22.75 | × 53 秒超過 |
+| 1920 | 712 秒 | 22.95 | × 大幅超過 |
+
+ガウシアン数は動作確認済みの 50 万を既定にしている。**25 万でも目視で
+区別できず（PSNR 差 0.04 dB）81 秒速く、ファイルも半分**になるので、
+`--max-splats 250000` で切り替えられる。
 
 ## 二段構成
 

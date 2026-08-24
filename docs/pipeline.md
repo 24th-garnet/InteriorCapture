@@ -275,15 +275,15 @@ scene/
 **本番採用は Brush。** msplat と同一データで比較し、PSNR +5.4 dB、異方性 984 倍 → 55 倍。
 `--max-splats` が正確に効くため増殖の制御性も高い。
 
-推奨コマンド:
+**学習解像度は 640 に固定する。** 実測では 960 で +0.21 dB、1920 で +0.42 dB
+改善するが、960 は 5 分要件を 53 秒超過する。ツアービューアで実際に動かして
+確認した結果 640 で十分と判断した。高解像度対応は後付けの課題として切り離す。
+
+推奨コマンド（前処理から 3DGS まで一括）:
 
 ```bash
-brush scene \
-  --total-train-iters 10000 \
-  --max-splats 500000 \
-  --max-resolution 640 \
-  --eval-split-every 50 --eval-every 5000 --eval-save-to-disk \
-  --export-every 10000 --export-path out/ --export-name splat_{iter}.ply
+mdr2colmap server room-xxxx.mdr -o scene/ \
+  --brush ../vendor/brush/target/release/brush
 ```
 
 - 初期化: LiDAR 点群（`points3D.ply`）。Brush は汎用スプラット読み込みを使うので

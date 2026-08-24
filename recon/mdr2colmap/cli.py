@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import colmap, floorplan, pointcloud, tour, verify
+from . import colmap, floorplan, pipeline, pointcloud, tour, verify
 from .mdr import Bundle, MDRError
 from .mesh import read_ply_mesh
 
@@ -182,6 +182,40 @@ def cmd_tour(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_server(args: argparse.Namespace) -> int:
+    """サーバ側パイプライン。学習解像度は 640 固定。"""
+    brush = Path(args.brush).expanduser()
+    if not brush.exists():
+        print(f"エラー: brush が見つかりません: {brush}", file=sys.stderr)
+        return 2
+
+    print(f"学習解像度 {pipeline.TRAIN_RESOLUTION} / ガウシアン {args.max_splats:,} / "
+          f"{args.iterations:,} iteration")
+    if args.no_train:
+        result = pipeline.run(args.bundle, args.output, refine_poses=not args.no_refine)
+    else:
+        result = pipeline.run_all(
+            args.bundle, args.output, brush,
+            refine_poses=not args.no_refine,
+        )
+
+    print()
+    print(f"{'段階':<16}{'秒':>8}  内容")
+    for st in result.stages:
+        print(f"{st.name:<16}{st.seconds:>8.1f}  {st.detail}")
+    print(f"{'合計':<16}{result.total:>8.1f}")
+    print()
+    print(f"シーン    {result.scene_dir}")
+    print(f"ツアー    {result.tour_path}")
+    if result.splat_path:
+        print(f"splat     {result.splat_path}  "
+              f"({result.splat_path.stat().st_size / 1e6:.0f} MB)")
+        print()
+        print("閲覧:")
+        print(f"  open -n -a MadoribaTour.app --args {result.tour_path} {result.splat_path}")
+    return 0 if (args.no_train or result.splat_path) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="mdr2colmap",
@@ -226,6 +260,18 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--spacing", type=float, default=1.0, help="station の間隔(m)")
     tr.add_argument("--eye-height", type=float, default=1.5, help="視点の高さ(m)")
     tr.set_defaults(func=cmd_tour)
+
+    sv = sub.add_parser("server", help="サーバ側パイプライン（前処理 + 3DGS、解像度 640 固定）")
+    sv.add_argument("bundle", help=".mdr ディレクトリ")
+    sv.add_argument("-o", "--output", required=True, help="出力ディレクトリ")
+    sv.add_argument("--brush", default="../vendor/brush/target/release/brush",
+                    help="Brush の実行ファイル")
+    sv.add_argument("--max-splats", type=int, default=pipeline.MAX_SPLATS,
+                    help="ガウシアン数の上限。25 万でも目視で区別できず 81 秒速い")
+    sv.add_argument("--iterations", type=int, default=pipeline.TRAIN_ITERS)
+    sv.add_argument("--no-refine", action="store_true", help="ポーズ精密化を行わない")
+    sv.add_argument("--no-train", action="store_true", help="前処理のみ（3DGS を回さない）")
+    sv.set_defaults(func=cmd_server)
 
     args = p.parse_args(argv)
     try:
