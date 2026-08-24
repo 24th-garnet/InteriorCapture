@@ -40,20 +40,38 @@ from .mesh import read_ply_mesh
 TRAIN_RESOLUTION = 640
 #: ガウシアン数の上限。
 #:
-#: 25 万を既定にする。50 万との差は PSNR 0.04 dB で、静止画の等倍比較では
-#: 区別できない。ツアービューアで動かして比較したところ「僅かに劣るが許容範囲」
-#: との評価だった。得られるものは大きい:
-#:   3DGS 学習   260 秒 → 179 秒（81 秒短縮）
-#:   ファイル    112 MB → 56 MB（顧客への共有時の転送量が半分）
-#:   5 分要件の余裕  18 秒 → 101 秒
+#: 25 万でも 50 万との差は PSNR 0.04 dB で、ツアービューアで動かした評価は
+#: 「僅かに劣るが許容範囲」だった。25 万なら学習が 81 秒短く、ファイルも半分。
+#: それでも 50 万を既定に置くのは、25 万での完走実績がないため。
 #:
-#: 余裕が 18 秒しかないと、他の処理が同時に走るだけで要件を超過する
-#: （実測で 3DGS が 262→302 秒に伸びた例がある）。変動に耐える余裕を
-#: 持たせる意味でも 25 万が妥当。
-#: 品質を優先する場合は --max-splats 500000 で戻せる。
-MAX_SPLATS = 250_000
+#: 当初 25 万を既定にしたところ学習が落ちたので「上限に早く達するのが原因」と
+#: 判断したが、これは誤りだった。同じ panic は 50 万でも別シーンで起きる
+#: （`TRAIN_ATTEMPTS` を参照）。上限値とは無関係な競合状態であり、
+#: 25 万が落ちたのはたまたまである可能性が高い。
+#:
+#: リトライを入れたので 25 万も再評価する価値はあるが、
+#: 実測が取れるまでは実績のある 50 万を既定に置く。
+MAX_SPLATS = 500_000
 #: iteration。5K では 0.97 dB 落ちるのでここが下限。
 TRAIN_ITERS = 10_000
+#: 学習の試行回数。
+#:
+#: Brush が依存する burn の融合エンジン (burn-fusion) には競合状態があり、
+#: 学習が確率的に落ちる:
+#:
+#:   burn_cubecl_fusion::engine::launch::output.rs:207
+#:     called `Option::unwrap()` on a `None` value
+#:
+#: 同一シーン・同一引数で落ちたり通ったりする。実測では 408 フレームの部屋で
+#: 1 回目が 54 秒で落ち、2 回目が 300 秒で完走した。上限値やシーンとは相関せず
+#: （50 万で 4 連続成功した後、別シーンの 50 万で落ちた）、再現条件は掴めていない。
+#: burn 側にも修正はなく、公開されている回避策は融合の無効化のみ (tracel-ai/burn#4347)。
+#: 融合は Brush のバックエンド型に埋め込まれている
+#: (impl SplatOps for Fusion<MainBackendBase>) ため、機能フラグでは外せない。
+#:
+#: 落ちるのは学習の序盤（実測 32〜54 秒）なので、捨てる時間は 1 分弱で済む。
+#: 失敗は PLY が出ないことで確実に検知できる。
+TRAIN_ATTEMPTS = 3
 
 
 @dataclass
@@ -150,6 +168,7 @@ def train(
     max_splats: int = MAX_SPLATS,
     iterations: int = TRAIN_ITERS,
     eval_split_every: int = 50,
+    attempts: int = TRAIN_ATTEMPTS,
     log=print,
 ) -> tuple[Path | None, float]:
     """Brush で 3DGS を学習する。戻り値は (splat の PLY, 所要秒)。
@@ -176,18 +195,25 @@ def train(
         "--export-path", str(gs) + "/",
     ]
     t = time.time()
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    for attempt in range(1, attempts + 1):
+        if gs.exists():
+            shutil.rmtree(gs)
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        plys = sorted(gs.glob("*.ply")) if gs.exists() else []
+        if plys:
+            elapsed = time.time() - t
+            note = f"（{attempt} 回目で成功）" if attempt > 1 else ""
+            log(f"  3DGS 学習 {elapsed:.0f}s  ({plys[0].name}){note}")
+            return plys[0], elapsed
+
+        tail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "(stderr なし)"
+        if attempt < attempts:
+            log(f"  3DGS 学習 {attempt} 回目が落ちました。再試行します: {tail[:110]}")
+
     elapsed = time.time() - t
-
-    plys = sorted(gs.glob("*.ply")) if gs.exists() else []
-    if not plys:
-        log(f"  3DGS 学習が出力を残しませんでした（{elapsed:.0f}s）")
-        if proc.stderr.strip():
-            log("  " + proc.stderr.strip().splitlines()[-1])
-        return None, elapsed
-
-    log(f"  3DGS 学習 {elapsed:.0f}s  ({plys[0].name})")
-    return plys[0], elapsed
+    log(f"  3DGS 学習が {attempts} 回とも失敗しました（{elapsed:.0f}s）")
+    log("  " + tail)
+    return None, elapsed
 
 
 def run_all(
