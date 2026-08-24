@@ -28,15 +28,18 @@ NS_ASSUME_NONNULL_BEGIN
 @interface MDRXAtlas : NSObject
 
 /// メッシュの UV を展開する。
-/// @param positions 頂点座標 (vertexCount * 3)
+/// @param positions 頂点座標。連続する 3 float が xyz。
+/// @param stride 頂点 1 個あたりのバイト数。**Swift の SIMD3<Float> は 16 バイト**
+///   なので 12 ではなく 16 を渡すこと。取り違えると座標が総崩れになる。
 /// @param indices 三角形インデックス (indexCount)
 /// @param resolution 目標とするアトラスの一辺（テクセル）
-+ (nullable MDRAtlasResult *)parametrizePositions:(const float *)positions
++ (nullable MDRAtlasResult *)parametrizePositions:(const void *)positions
                                       vertexCount:(NSUInteger)vertexCount
+                                           stride:(NSUInteger)stride
                                           indices:(const uint32_t *)indices
                                        indexCount:(NSUInteger)indexCount
                                        resolution:(uint32_t)resolution
-    NS_SWIFT_NAME(parametrize(positions:vertexCount:indices:indexCount:resolution:));
+    NS_SWIFT_NAME(parametrize(positions:vertexCount:stride:indices:indexCount:resolution:));
 @end
 
 NS_ASSUME_NONNULL_END

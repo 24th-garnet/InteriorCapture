@@ -83,8 +83,10 @@ final class OnDeviceBaker {
         guard let atlas = meshVertices.withUnsafeBufferPointer({ vp in
             meshIndices.withUnsafeBufferPointer { ip in
                 MDRXAtlas.parametrize(
-                    positions: UnsafeRawPointer(vp.baseAddress!).assumingMemoryBound(to: Float.self),
+                    positions: UnsafeRawPointer(vp.baseAddress!),
                     vertexCount: UInt(meshVertices.count),
+                    // SIMD3<Float> は 16 バイト。12 を渡すと座標が総崩れになる。
+                    stride: UInt(MemoryLayout<SIMD3<Float>>.stride),
                     indices: ip.baseAddress!,
                     indexCount: UInt(meshIndices.count),
                     resolution: UInt32(requestedAtlasSize)

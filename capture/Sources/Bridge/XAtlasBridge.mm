@@ -1,6 +1,7 @@
 #import "XAtlasBridge.h"
 #include "xatlas.h"
 #include <vector>
+#include <cmath>
 
 @implementation MDRAtlasResult {
     std::vector<uint32_t> _mapping;
@@ -36,11 +37,15 @@
 
 @implementation MDRXAtlas
 
-+ (MDRAtlasResult *)parametrizePositions:(const float *)positions
++ (MDRAtlasResult *)parametrizePositions:(const void *)positions
                              vertexCount:(NSUInteger)vertexCount
+                                  stride:(NSUInteger)stride
                                  indices:(const uint32_t *)indices
                               indexCount:(NSUInteger)indexCount
                               resolution:(uint32_t)resolution {
+    auto vertexAt = [positions, stride](uint32_t i) -> const float * {
+        return (const float *)((const uint8_t *)positions + (size_t)i * stride);
+    };
     if (vertexCount == 0 || indexCount == 0) return nil;
 
     xatlas::Atlas *atlas = xatlas::Create();
@@ -48,7 +53,7 @@
     xatlas::MeshDecl decl;
     decl.vertexCount = (uint32_t)vertexCount;
     decl.vertexPositionData = positions;
-    decl.vertexPositionStride = sizeof(float) * 3;
+    decl.vertexPositionStride = (uint32_t)stride;
     decl.indexCount = (uint32_t)indexCount;
     decl.indexData = indices;
     decl.indexFormat = xatlas::IndexFormat::UInt32;
@@ -58,10 +63,33 @@
         return nil;
     }
 
+    // **resolution 指定では寸法を制御できない。**
+    // xatlas は resolution から texelsPerUnit を推定するだけで、結果の寸法は
+    // 保証されない。同じ設定でも 2360 になったり 4958 になったりする（実測）。
+    // アトラスが想定より大きくなると 1 テクセルの実面積が小さくなり、
+    // 同じフレーム数では埋まらないテクセルが増えて黒抜けになる
+    // （4958 のとき 1 テクセル 1.89mm で未着色 17.3%）。
+    //
+    // 表面積から texelsPerUnit を直接求めれば寸法を制御できる。
+    //   texelsPerUnit = sqrt(目標テクセル数 * 充填率 / 表面積)
+    // 充填率は実測で概ね 85%。0.9 倍して安全側に寄せる。
+    double area = 0.0;
+    for (NSUInteger t = 0; t + 2 < indexCount; t += 3) {
+        const float *a = vertexAt(indices[t]);
+        const float *b = vertexAt(indices[t + 1]);
+        const float *c = vertexAt(indices[t + 2]);
+        double ux = b[0]-a[0], uy = b[1]-a[1], uz = b[2]-a[2];
+        double vx = c[0]-a[0], vy = c[1]-a[1], vz = c[2]-a[2];
+        double cx = uy*vz - uz*vy, cy = uz*vx - ux*vz, cz = ux*vy - uy*vx;
+        area += 0.5 * sqrt(cx*cx + cy*cy + cz*cz);
+    }
+
     xatlas::PackOptions pack;
-    // アトラスを 1 枚に収める。複数枚になると GLB 側でマテリアルが増えて扱いが面倒。
-    pack.resolution = resolution;
-    pack.maxChartSize = resolution - 2;
+    if (area > 1e-6) {
+        pack.texelsPerUnit = (float)(sqrt((double)resolution * resolution * 0.80 / area) * 0.9);
+    } else {
+        pack.resolution = resolution;
+    }
     pack.bruteForce = false;
     pack.padding = 2;   // チャート境界のにじみを防ぐ
 
