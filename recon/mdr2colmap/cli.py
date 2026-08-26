@@ -185,17 +185,24 @@ def cmd_tour(args: argparse.Namespace) -> int:
 def cmd_server(args: argparse.Namespace) -> int:
     """サーバ側パイプライン。学習解像度は 640 固定。"""
     brush = Path(args.brush).expanduser()
-    if not brush.exists():
+    # --no-train のときは brush を使わないので存在確認もしない。
+    # 前処理だけ回したい場合（実験用のシーン生成など）に brush の用意を強いない。
+    if not args.no_train and not brush.exists():
         print(f"エラー: brush が見つかりません: {brush}", file=sys.stderr)
         return 2
 
-    print(f"学習解像度 {pipeline.TRAIN_RESOLUTION} / ガウシアン {args.max_splats:,} / "
-          f"{args.iterations:,} iteration")
     if args.no_train:
-        result = pipeline.run(args.bundle, args.output, refine_poses=not args.no_refine)
+        print("前処理のみ（--no-train）")
+    else:
+        print(f"学習解像度 {pipeline.TRAIN_RESOLUTION} / ガウシアン {args.max_splats:,} / "
+              f"{args.iterations:,} iteration")
+    if args.no_train:
+        result = pipeline.run(args.bundle, args.output, refine_poses=not args.no_refine,
+                              correct_exposure=not args.no_exposure)
     else:
         result = pipeline.run_all(
             args.bundle, args.output, brush,
+            correct_exposure=not args.no_exposure,
             refine_poses=not args.no_refine,
         )
 
@@ -270,6 +277,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="ガウシアン数の上限。25 万でも目視で区別できず 81 秒速い")
     sv.add_argument("--iterations", type=int, default=pipeline.TRAIN_ITERS)
     sv.add_argument("--no-refine", action="store_true", help="ポーズ精密化を行わない")
+    sv.add_argument("--no-exposure", action="store_true",
+                    help="露出補正を行わない（画像はシンボリックリンクになる）")
     sv.add_argument("--no-train", action="store_true", help="前処理のみ（3DGS を回さない）")
     sv.set_defaults(func=cmd_server)
 

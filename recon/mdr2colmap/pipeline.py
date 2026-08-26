@@ -32,7 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import colmap, pointcloud, refine, tour
+from . import colmap, photometric, pointcloud, refine, tour
 from .mdr import Bundle
 from .mesh import read_ply_mesh
 
@@ -99,6 +99,7 @@ def run(
     conf_min: int = 2,
     voxel: float = 0.02,
     refine_poses: bool = True,
+    correct_exposure: bool = True,
     station_spacing: float = 1.0,
     log=print,
 ) -> PipelineResult:
@@ -138,11 +139,6 @@ def run(
     t = time.time()
     colmap.write_cameras_bin(sparse / "cameras.bin", frames, width, height)
     colmap.write_images_bin(sparse / "images.bin", frames, names)
-    for f, name in zip(frames, names):
-        dst = images / name
-        if dst.exists() or dst.is_symlink():
-            dst.unlink()
-        dst.symlink_to(bundle.image_path(f.index).resolve())
     stages.append(Stage("COLMAP 書き出し", time.time() - t, f"{len(frames)} カメラ"))
     log(f"  COLMAP 書き出し {stages[-1].seconds:.1f}s")
 
@@ -151,6 +147,24 @@ def run(
     colmap.write_points3d_ply(sparse / "points3D.ply", xyz, rgb)
     stages.append(Stage("初期点群", time.time() - t, f"{len(xyz):,} 点"))
     log(f"  初期点群 {stages[-1].seconds:.1f}s  ({len(xyz):,} 点)")
+
+    # 露出補正は初期点群の後にしか置けない。同じ 3 次元点を複数フレームで
+    # 見比べてゲインを解くため、点群が要る。
+    t = time.time()
+    if correct_exposure:
+        res = photometric.correct(bundle, frames, xyz, names, images)
+        detail = (f"ゲイン {res.gains.min():.2f}〜{res.gains.max():.2f} / "
+                  f"明るさ x{res.brightness_scale:.2f}")
+        stages.append(Stage("露出補正", time.time() - t, detail))
+        log(f"  露出補正 {stages[-1].seconds:.1f}s  ({detail})")
+    else:
+        for f, name in zip(frames, names):
+            dst = images / name
+            if dst.exists() or dst.is_symlink():
+                dst.unlink()
+            dst.symlink_to(bundle.image_path(f.index).resolve())
+        stages.append(Stage("画像リンク", time.time() - t, "露出補正なし"))
+        log(f"  画像リンク {stages[-1].seconds:.1f}s  (露出補正なし)")
 
     t = time.time()
     tr = tour.extract(bundle, spacing=station_spacing)

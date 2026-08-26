@@ -15,7 +15,13 @@ final class TourRenderer: NSObject, MTKViewDelegate {
 
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
-    private var splatRenderer: SplatRenderer?
+    /// 読み込み済みモデル。盲検の A/B 比較で切り替える。
+    ///
+    /// 2 つのウィンドウを並べる方式は使えない。同じ GPU を奪い合って
+    /// 後から開いた方の描画が劣化し、それが判断を左右する。
+    /// 同一ウィンドウで切り替えれば、描画条件は完全に同じになる。
+    private var models: [SplatRenderer] = []
+    private var current = 0
     private let camera: TourCamera
 
     private var lastFrameTime = CFAbsoluteTimeGetCurrent()
@@ -32,6 +38,16 @@ final class TourRenderer: NSObject, MTKViewDelegate {
         self.commandQueue = queue
         self.camera = camera
         super.init()
+    }
+
+    /// 何番目のモデルを表示しているか（0 始まり）。
+    var currentIndex: Int { current }
+    var modelCount: Int { models.count }
+
+    /// 次のモデルへ切り替える。読み込み済みなので瞬時に切り替わる。
+    func toggle() {
+        guard models.count > 1 else { return }
+        current = (current + 1) % models.count
     }
 
     func load(splatURL: URL) async throws {
@@ -59,7 +75,7 @@ final class TourRenderer: NSObject, MTKViewDelegate {
         report("GPU へ転送中 \(points.count / 1000)k splat")
         let chunk = try SplatChunk(device: device, from: points)
         _ = await renderer.addChunk(chunk)
-        splatRenderer = renderer
+        models.append(renderer)
         report("\(points.count / 1000)k splat")
     }
 
@@ -77,7 +93,7 @@ final class TourRenderer: NSObject, MTKViewDelegate {
         camera.update(deltaTime: Float(now - lastFrameTime))
         lastFrameTime = now
 
-        guard let renderer = splatRenderer,
+        guard current < models.count,
               let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
               let commandBuffer = commandQueue.makeCommandBuffer()
@@ -99,7 +115,7 @@ final class TourRenderer: NSObject, MTKViewDelegate {
         )
 
         do {
-            _ = try renderer.render(viewports: [viewport],
+            _ = try models[current].render(viewports: [viewport],
                                     colorTexture: drawable.texture,
                                     colorStoreAction: .store,
                                     depthTexture: descriptor.depthAttachment.texture,

@@ -18,13 +18,13 @@ struct MadoribaTourApp: App {
 ///   MadoribaTour <tour.json> <splat.ply|spz>
 struct RootView: View {
     @State private var tour: Tour?
-    @State private var splatURL: URL?
+    @State private var splatURLs: [URL] = []
     @State private var message: String?
 
     var body: some View {
         Group {
-            if let tour, let splatURL {
-                TourView(tour: tour, splatURL: splatURL)
+            if let tour, !splatURLs.isEmpty {
+                TourView(tour: tour, splatURLs: splatURLs)
             } else {
                 picker
             }
@@ -45,7 +45,7 @@ struct RootView: View {
                 Button("splat を選ぶ") { pick(json: false) }
             }
             if tour != nil { Text("tour.json ✓").font(.caption) }
-            if splatURL != nil { Text("splat ✓").font(.caption) }
+            if !splatURLs.isEmpty { Text("splat ✓ \(splatURLs.count) 件").font(.caption) }
         }
         .padding(40)
     }
@@ -58,7 +58,7 @@ struct RootView: View {
                 tour = try? Tour.load(from: url)
                 if tour == nil { message = "tour.json を読めませんでした: \(a)" }
             } else {
-                splatURL = url
+                splatURLs.append(url)
             }
         }
     }
@@ -73,7 +73,7 @@ struct RootView: View {
             do { tour = try Tour.load(from: url) }
             catch { message = "tour.json を読めませんでした: \(error.localizedDescription)" }
         } else {
-            splatURL = url
+            splatURLs = [url]
         }
     }
 }
