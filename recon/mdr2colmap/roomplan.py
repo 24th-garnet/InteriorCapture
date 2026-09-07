@@ -188,7 +188,7 @@ class RoomLayout:
     floor_y: float
     ceiling_y: float
     sections: list[Section] = field(default_factory=list)
-    #: RoomPlan の `floors` が返す床の外形（X-Z）。壁からの内法とは一致しない。
+    #: RoomPlan の `floors` が返す床の外形（X-Z）。壁が閉じないときの代替。
     floor_polygon: np.ndarray | None = None
 
     @property
@@ -199,11 +199,15 @@ class RoomLayout:
 
     @property
     def floor_area(self) -> float | None:
-        """RoomPlan の床外形（`polygonCorners`）の面積。**内法の照合用。**
+        """RoomPlan の床外形（`polygonCorners`）の面積。
 
-        実測（room-33d49373）で壁からの内法 11.288 m2 に対し 11.29 m2。
-        壁の線分を辿る経路と床の多角形は独立なので、一致すれば内法の裏付けに
-        なり、離れていれば撮影の抜けや壁の取り違えを疑う手掛かりになる。
+        **壁の照合には使えない。** 実データで床の多角形の隅は壁ループの隅と
+        完全に一致し（距離 0.0m、面積差 1.3e-6 m2）、壁の直線の交点とも一致した。
+        RoomPlan は床を壁から導出しているので、突き合わせても何も検出できない。
+
+        価値があるのは**壁が閉じなかったときの代替**。壁の連結が切れると
+        `polygon` は None になり、外接矩形で代用すると過大表示になる。
+        床の多角形があればそちらを使う。
 
         **`floors[].dimensions` は使わない。** 同じ床で 3.678 x 3.262 = 11.998 m2
         と出るが、これは多角形の実寸（3.601 x 3.135）より大きい外接的な値で、
@@ -255,14 +259,32 @@ class RoomLayout:
         return np.array(chain[:-1])
 
     @property
+    def area_source(self) -> str:
+        """面積の出所。`"壁"` / `"床外形"` / `"外接矩形"`。
+
+        外接矩形は**必ず過大**になるので、販売図面ではその旨を明示する。
+        """
+        if self.polygon is not None:
+            return "壁"
+        if self.floor_polygon is not None:
+            return "床外形"
+        return "外接矩形"
+
+    @property
     def area(self) -> float:
-        """内法面積。多角形が閉じなければ外接矩形で代用する。"""
+        """内法面積。
+
+        壁のループが閉じればそれを使う。閉じない場合は RoomPlan の床外形を
+        使い、それも無ければ外接矩形で代用する。**外接矩形は過大になる**ので
+        最後の手段。
+        """
         poly = self.polygon
+        if poly is None:
+            poly = self.floor_polygon
         if poly is None:
             x0, y0, x1, y1 = self.bounds
             return (x1 - x0) * (y1 - y0)
-        x, y = poly[:, 0], poly[:, 1]
-        return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y)) / 2)
+        return _poly_area(poly)
 
     @property
     def tatami(self) -> float:
@@ -657,13 +679,8 @@ def summary(layout: RoomLayout) -> str:
         f"（約 {display_tatami(layout.area):.1f} 帖）内法実測"
         f"   天井高 {layout.height:.2f} m   床 Y={layout.floor_y:+.2f}",
     ]
-    fa = layout.floor_area
-    if fa is not None:
-        d = fa - layout.area
-        lines.append(
-            f"照合: RoomPlan の床外形 {fa:.2f} m2（内法との差 {d:+.2f} m2 / "
-            f"{d / layout.area * 100:+.1f}%）"
-        )
+    if layout.area_source != "壁":
+        lines.append(f"※ 壁のループが閉じないため、面積は{layout.area_source}から求めています")
     lines.append(f"壁 {len(layout.walls)} 枚")
     for i, w in enumerate(layout.walls):
         marks = "".join({"door": "戸", "window": "窓"}.get(o.category, "口")
@@ -681,6 +698,4 @@ def summary(layout: RoomLayout) -> str:
     if layout.furniture:
         names = "  ".join(FURNITURE_JA.get(f.category, f.category) for f in layout.furniture)
         lines.append(f"家具 {len(layout.furniture)}: {names}")
-    if layout.polygon is None:
-        lines.append("※ 壁が閉じていないため、面積は外接矩形で代用しています")
     return "\n".join(lines)

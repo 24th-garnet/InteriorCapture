@@ -269,11 +269,11 @@ def test_section_label_becomes_a_room_name(square_room):
     assert roomplan.load(square_room).room_name == "居室"
 
 
-def test_floor_polygon_is_read_but_not_used_for_area(square_room):
-    """`floors` の外形は照合用に読むが、面積そのものには使わない。
+def test_walls_win_over_the_floor_polygon(square_room):
+    """壁のループが閉じているときは壁から面積を出す。
 
-    実データでは壁からの内法 11.288 m2 と床の多角形 11.29 m2 が一致する。
-    ここでは意図的に食い違う床を与えて、面積が壁側から出ることを押さえる。
+    RoomPlan は床を壁から導出しているので（実データで隅が距離 0.0 で一致）、
+    両者が食い違うのは床側が壊れているとき。壁を優先する。
     """
     data = json.loads(square_room.read_text())
     data["floors"] = [{
@@ -294,3 +294,54 @@ def test_floor_polygon_is_read_but_not_used_for_area(square_room):
     assert layout.floor_area == pytest.approx(20.0, abs=0.1)
     # 面積は壁からの内法のまま
     assert layout.area == pytest.approx(12.0, abs=0.05)
+    assert layout.area_source == "壁"
+
+
+def test_floor_polygon_replaces_the_bounding_box_when_walls_do_not_close(tmp_path):
+    """壁が閉じないときは外接矩形ではなく床の外形を使う。
+
+    外接矩形は**必ず過大**になる。L 字の部屋で壁の連結が切れると、
+    外接矩形は凹んだ部分まで面積に数えてしまい、販売図面としては
+    過大表示になる。
+    """
+    # 平行な壁 2 枚だけ。ループは閉じない
+    walls = [
+        _surface([2.0, 1.2, 0.0], [1, 0, 0], 4.0, 2.4, "A"),
+        _surface([2.0, 1.2, 3.0], [1, 0, 0], 4.0, 2.4, "B"),
+    ]
+    # 床は L 字（外接矩形 4x3 = 12 に対し実面積 9）
+    corners = [[-2.0, -1.5, 0.0], [2.0, -1.5, 0.0], [2.0, 0.0, 0.0],
+               [0.0, 0.0, 0.0], [0.0, 1.5, 0.0], [-2.0, 1.5, 0.0]]
+    data = {"walls": walls, "doors": [], "windows": [], "openings": [],
+            "objects": [], "sections": [],
+            "floors": [{
+                "identifier": "F", "category": {"floor": {}},
+                "confidence": {"high": {}}, "dimensions": [4.0, 3.0, 0.0],
+                "transform": _column_major([[1, 0, 0, 2.0], [0, 0, 1, 0.0],
+                                            [0, -1, 0, 1.5], [0, 0, 0, 1]]),
+                "polygonCorners": corners, "completedEdges": [], "curve": None,
+            }]}
+    p = tmp_path / "room.json"
+    p.write_text(json.dumps(data))
+
+    layout = roomplan.load(p)
+    assert layout.polygon is None, "壁は閉じない"
+    assert layout.area_source == "床外形"
+    assert layout.area == pytest.approx(9.0, abs=0.05), "外接矩形の 12 ではない"
+    assert "床外形" in roomplan.summary(layout)
+
+
+def test_bounding_box_is_the_last_resort(tmp_path):
+    """床の外形も無ければ外接矩形。過大である旨を要約に出す。"""
+    walls = [
+        _surface([2.0, 1.2, 0.0], [1, 0, 0], 4.0, 2.4, "A"),
+        _surface([2.0, 1.2, 3.0], [1, 0, 0], 4.0, 2.4, "B"),
+    ]
+    data = {"walls": walls, "doors": [], "windows": [], "openings": [],
+            "floors": [], "objects": [], "sections": []}
+    p = tmp_path / "room.json"
+    p.write_text(json.dumps(data))
+    layout = roomplan.load(p)
+    assert layout.area_source == "外接矩形"
+    assert layout.area == pytest.approx(12.0, abs=0.05)
+    assert "外接矩形" in roomplan.summary(layout)
