@@ -383,3 +383,45 @@ def test_opening_fixes_file_is_read(tmp_path):
         "openings": {"D-1": "window", "D-2": "opening"},
     }))
     assert roomplan.load_opening_fixes(p) == {"D-1": "window", "D-2": "opening"}
+
+
+def test_north_only_when_the_capture_actually_had_a_heading():
+    """方位は撮影時に磁気コンパスが使えたときだけ採用する。
+
+    取れていないのに図へ北を描くと、販売図面に嘘の方位が載る。
+    """
+    assert roomplan.north_from_manifest({"world_alignment": "gravity"}) is None
+    # 揃え方が heading でも、使えなかった撮影は不採用
+    assert roomplan.north_from_manifest({
+        "world_alignment": "gravityAndHeading",
+        "heading": {"available": True, "usable": False, "accuracy_deg": 45.0},
+    }) is None
+    assert roomplan.north_from_manifest({"world_alignment": "gravityAndHeading"}) is None
+    n = roomplan.north_from_manifest({
+        "world_alignment": "gravityAndHeading",
+        "heading": {"available": True, "usable": True, "accuracy_deg": 8.0},
+    })
+    # +X が東 / +Z が南に揃うので、北は -Z。平面図では画面上を指す
+    assert n == pytest.approx([0.0, -1.0])
+
+
+def test_north_symbol_is_drawn_only_when_given(square_room):
+    layout = roomplan.load(square_room)
+    assert ">N</text>" not in roomplan.to_svg(layout)
+    with_north = roomplan.load(square_room, north=np.array([0.0, -1.0]))
+    assert ">N</text>" in roomplan.to_svg(with_north)
+    # 但し書きから方位の記述が消えている（描いたので）
+    assert "扉の開き勝手は未計測" in roomplan.to_svg(with_north)
+
+
+def test_disclaimers_match_what_the_drawing_shows(square_room):
+    """方位を描いたら「未計測」と書かない。描けなければ書く。"""
+    plain = roomplan.load(square_room)
+    assert roomplan.NO_NORTH_DISCLAIMER in roomplan.disclaimers(plain)
+    assert roomplan.NO_NORTH_DISCLAIMER in roomplan.to_svg(plain)
+
+    with_north = roomplan.load(square_room, north=np.array([0.0, -1.0]))
+    assert roomplan.NO_NORTH_DISCLAIMER not in roomplan.disclaimers(with_north)
+    assert roomplan.NO_NORTH_DISCLAIMER not in roomplan.to_svg(with_north)
+    # どちらでも共通の但し書きは残る
+    assert "壁芯面積ではありません" in roomplan.to_svg(with_north)

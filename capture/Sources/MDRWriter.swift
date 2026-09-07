@@ -175,7 +175,10 @@ final class MDRWriter {
 
     // MARK: - 完了処理
 
-    func finish(probe: DeviceProbe.Report, format: ARConfiguration.VideoFormat, gravity: SIMD3<Float>?) throws {
+    func finish(probe: DeviceProbe.Report, format: ARConfiguration.VideoFormat,
+                gravity: SIMD3<Float>?,
+                worldAlignment: String = "gravity",
+                heading: Heading.Report? = nil) throws {
         try poseLines.joined(separator: "\n").appending("\n")
             .write(to: bundleURL.appendingPathComponent("poses.jsonl"), atomically: true, encoding: .utf8)
 
@@ -200,9 +203,13 @@ final class MDRWriter {
                 "format": "float16",
                 "unit": "meter",
             ],
-            "world_alignment": "gravity",
+            "world_alignment": worldAlignment,
             "frame_count": frameCount,
         ]
+        if let h = heading {
+            // 方位を採用したかどうかと精度。**取れていないのに図へ北を描かないため。**
+            manifest["heading"] = h.json
+        }
         if let g = gravity {
             manifest["gravity"] = [Double(g.x), Double(g.y), Double(g.z)]
         }

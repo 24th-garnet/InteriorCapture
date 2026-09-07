@@ -42,6 +42,9 @@ targets:
         UILaunchScreen: {}
         # LiDAR スキャンにカメラを使う
         NSCameraUsageDescription: 室内をスキャンして 3D 復元するためにカメラを使用します。
+        # 間取り図に真北を入れるため。ARKit の .gravityAndHeading は磁気コンパスを
+        # 使い、位置情報の許可が無いと方位を確立できない。
+        NSLocationWhenInUseUsageDescription: 間取り図に方位（真北）を記入するため、コンパスを使用します。
         # Documents を Files アプリに露出させ、AirDrop / USB で Mac にコピーできるようにする。
         # ストリーミング転送 (Phase 4) を実装するまではこれが唯一の取り出し口。
         UIFileSharingEnabled: true
@@ -53,3 +56,22 @@ targets:
           - UIInterfaceOrientationPortrait
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+
+  MadoribaCaptureTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    # 実データ（room.json）を焼き込んで、移植した幾何が Python と同じ数値を
+    # 出すか検証する。CapturedRoom は Codable なのでそのまま復元できる。
+    resources:
+      - path: Tests/Fixtures
+        buildPhase: resources
+    dependencies:
+      - target: MadoribaCapture
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MadoribaCapture.app/MadoribaCapture"
+        BUNDLE_LOADER: "$(TEST_HOST)"

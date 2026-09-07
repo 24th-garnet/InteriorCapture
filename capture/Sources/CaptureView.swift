@@ -27,6 +27,7 @@ struct ARViewContainer: UIViewRepresentable {
 struct CaptureView: View {
     @StateObject private var capture = CaptureSession()
     @State private var showProbe = false
+    @State private var showPlan = false
     /// RoomPlan と同居できるかの実測。撮影経路を作り直す前に潰しておく。
     @StateObject private var coexist = CoexistProbeBox()
 
@@ -44,11 +45,26 @@ struct CaptureView: View {
         .sheet(isPresented: $showProbe) {
             probeSheet
         }
+        .sheet(isPresented: $showPlan) {
+            if #available(iOS 17.0, *), let room = capture.capturedRoom {
+                PlanReviewView(room: room,
+                               bundleURL: finishedBundleURL,
+                               north: capture.planNorth)
+            } else {
+                Text("間取りがまだ確定していません").padding()
+            }
+        }
         .alert("エラー", isPresented: .constant(isFailed)) {
             Button("OK") { capture.acknowledge() }
         } message: {
             if case .failed(let message) = capture.state { Text(message) }
         }
+    }
+
+    /// 保存済みバンドルの場所。訂正の書き出し先。
+    private var finishedBundleURL: URL? {
+        if case .finished(let url) = capture.state { return url }
+        return nil
     }
 
     private var isFailed: Bool {
@@ -150,7 +166,14 @@ struct CaptureView: View {
                 }
                 Text("ファイル App の「このiPad内」から Mac にコピーしてください")
                     .font(.caption2).foregroundStyle(.secondary)
-                Button("閉じる") { capture.acknowledge() }.buttonStyle(.borderedProminent)
+                HStack(spacing: 10) {
+                    // 平面図はメッシュを使わないので、焼き込みを待たずに出せる。
+                    if #available(iOS 17.0, *), capture.roomReady {
+                        Button("平面図を確認") { showPlan = true }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    Button("閉じる") { capture.acknowledge() }.buttonStyle(.bordered)
+                }
             }
             .padding()
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))

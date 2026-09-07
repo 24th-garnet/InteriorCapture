@@ -80,9 +80,24 @@ DISCLAIMERS = (
     f"帖数は 1 帖 = {TATAMI_AREA} m2 として換算し、小数第 1 位以下を切り捨てています。",
     "寸法は実測値のため誤差を含みます。契約時は実測図・登記簿を優先してください。",
     "記載の家具・什器は現況を示すもので、販売対象ではありません。",
-    "扉の開き勝手および方位は未計測のため、図では表現していません。",
+    "扉の開き勝手は未計測のため、図では表現していません。",
     "本図は現況と異なる場合があります。",
 )
+
+#: 方位が取れなかった撮影に足す但し書き。
+NO_NORTH_DISCLAIMER = "方位は未計測のため、図では表現していません。"
+
+
+def disclaimers(layout: "RoomLayout") -> tuple[str, ...]:
+    """図に載せる但し書き。**測れていないものだけを断る。**
+
+    方位を描けたのに「未計測」と書くと図と矛盾し、描けていないのに黙ると
+    向きが読めるように見える。図の内容に合わせて出し入れする。
+    """
+    out = list(DISCLAIMERS)
+    if layout.north is None:
+        out.insert(-1, NO_NORTH_DISCLAIMER)
+    return tuple(out)
 
 
 @dataclass
@@ -199,6 +214,12 @@ class RoomLayout:
     floor_y: float
     ceiling_y: float
     sections: list[Section] = field(default_factory=list)
+    #: 平面上の北の向き（X, Z の単位ベクトル）。取れていなければ None。
+    #:
+    #: `.gravityAndHeading` で撮ると world は **+X が東 / +Z が南**に揃うので
+    #: 北は `(0, -1)`。`.gravity` では向きが任意なので None のまま。
+    #: **取れていないのに方位記号を描くと販売図面に嘘の方位が載る。**
+    north: np.ndarray | None = None
     #: RoomPlan の `floors` が返す床の外形（X-Z）。壁が閉じないときの代替。
     floor_polygon: np.ndarray | None = None
 
@@ -338,6 +359,24 @@ def _segment(surface: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return c2 - d * half, c2 + d * half, center
 
 
+#: `.gravityAndHeading` の world 座標での北。+X が東 / +Z が南なので北は -Z。
+NORTH_GRAVITY_AND_HEADING = np.array([0.0, -1.0])
+
+
+def north_from_manifest(manifest: dict) -> np.ndarray | None:
+    """MDR の manifest から平面上の北を決める。
+
+    `world_alignment` が `gravityAndHeading` で、かつ `heading.usable` が真の
+    ときだけ北を返す。撮影時に磁気コンパスが使えなかった場合は None。
+    """
+    if manifest.get("world_alignment") != "gravityAndHeading":
+        return None
+    h = manifest.get("heading")
+    if not isinstance(h, dict) or not h.get("usable"):
+        return None
+    return NORTH_GRAVITY_AND_HEADING.copy()
+
+
 def load_opening_fixes(path: str | Path) -> dict[str, str]:
     """開口の種別の訂正を読む。`{識別子: "window" | "door" | "opening"}`。"""
     data = json.loads(Path(path).read_text())
@@ -345,7 +384,8 @@ def load_opening_fixes(path: str | Path) -> dict[str, str]:
 
 
 def load(path: str | Path,
-         opening_fixes: dict[str, str] | None = None) -> RoomLayout:
+         opening_fixes: dict[str, str] | None = None,
+         north: np.ndarray | None = None) -> RoomLayout:
     """`room.json` を読む。
 
     `opening_fixes` は開口の種別の訂正（`{識別子: 種別}`）。RoomPlan の
@@ -440,7 +480,7 @@ def load(path: str | Path,
     ceiling = floor_y + (max((w.height for w in walls), default=0.0))
     return RoomLayout(walls=walls, furniture=furniture,
                       floor_y=floor_y, ceiling_y=ceiling,
-                      sections=sections, floor_polygon=floor_polygon)
+                      sections=sections, floor_polygon=floor_polygon, north=north)
 
 
 def _project(wall: Wall, point: np.ndarray) -> float:
@@ -498,7 +538,8 @@ def to_svg(layout: RoomLayout, scale: float = 110.0, margin: float = 104.0,
     x0, y0, x1, y1 = x0 - pad, y0 - pad, x1 + pad, y1 + pad
     W = (x1 - x0) * scale + margin * 2
     # 下側は但し書きを入れるので広く取る
-    notes_h = 30 + len(DISCLAIMERS) * 15
+    notes = disclaimers(layout)
+    notes_h = 30 + len(notes) * 15
     H = (y1 - y0) * scale + margin * 2 + notes_h
 
     def px(p) -> tuple[float, float]:
@@ -656,11 +697,32 @@ def to_svg(layout: RoomLayout, scale: float = 110.0, margin: float = 104.0,
         f'</g>'
     )
 
+    # 方位記号。取れているときだけ描く。
+    if layout.north is not None:
+        n = np.asarray(layout.north, float)
+        n = n / max(float(np.linalg.norm(n)), 1e-9)
+        cx, cy = W - margin - 24, margin - 44
+        r = 20.0
+        # 画面座標は Y が下向きなので、world の (X, Z) をそのまま使える
+        tipx, tipy = cx + n[0] * r, cy + n[1] * r
+        tailx, taily = cx - n[0] * r * 0.7, cy - n[1] * r * 0.7
+        px_, py_ = -n[1], n[0]
+        out.append(
+            f'<g stroke="#1a1d21" stroke-width="1.6" fill="#1a1d21">'
+            f'<line x1="{tailx:.1f}" y1="{taily:.1f}" x2="{tipx:.1f}" y2="{tipy:.1f}"/>'
+            f'<polygon points="{tipx:.1f},{tipy:.1f} '
+            f'{tipx - n[0] * 8 + px_ * 4:.1f},{tipy - n[1] * 8 + py_ * 4:.1f} '
+            f'{tipx - n[0] * 8 - px_ * 4:.1f},{tipy - n[1] * 8 - py_ * 4:.1f}"/>'
+            f'<text x="{tipx:.1f}" y="{tipy + (-9 if n[1] < 0 else 17):.1f}" '
+            f'font-size="12" font-weight="600" text-anchor="middle" stroke="none">N</text>'
+            f'</g>'
+        )
+
     # 但し書き。規約が禁じるのは実際より有利な誤認なので、測り方と
     # 測っていないものを図の中に置く。別紙にすると図だけが流通する。
     out.append(f'<g font-size="10.5" fill="#6b7280">')
     base = H - notes_h + 14
-    for i, text in enumerate(DISCLAIMERS):
+    for i, text in enumerate(notes):
         out.append(f'<text x="{margin:.0f}" y="{base + i * 15:.0f}">※ {text}</text>')
     out.append("</g>")
     out.append("</svg>")

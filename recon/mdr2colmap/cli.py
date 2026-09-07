@@ -136,10 +136,26 @@ def cmd_roomplan(args: argparse.Namespace) -> int:
         print("RoomPlan を含む撮影が必要です（iOS 17 以降のビルド）。", file=sys.stderr)
         return 2
 
-    fixes = roomplan.load_opening_fixes(args.fixes) if args.fixes else None
-    layout = roomplan.load(path, opening_fixes=fixes)
+    # 端末が書いた訂正をそのまま使う。指定が無ければバンドル内の fixes.json。
+    fix_path = Path(args.fixes) if args.fixes else path.parent / "fixes.json"
+    fixes = None
+    if fix_path.exists():
+        fixes = roomplan.load_opening_fixes(fix_path)
+        if fixes:
+            print(f"開口の訂正 {len(fixes)} 件を {fix_path.name} から読みました",
+                  file=sys.stderr)
+    # 方位は manifest から。取れていなければ図に描かない。
+    north = None
+    manifest = path.parent / "manifest.json"
+    if manifest.exists():
+        import json as _json
+        north = roomplan.north_from_manifest(_json.loads(manifest.read_text()))
+    layout = roomplan.load(path, opening_fixes=fixes, north=north)
     print(roomplan.summary(layout))
-    medium = [o for w in layout.walls for o in w.openings if o.confidence == "medium"]
+    print("方位: " + ("真北を記入しました" if layout.north is not None
+                    else "未計測（.gravityAndHeading で撮り直すと入ります）"))
+    medium = [o for w in layout.walls for o in w.openings
+              if o.confidence == "medium" and not (fixes or {}).get(o.identifier)]
     if medium:
         print(f"※ 開口 {len(medium)} 件が confidence medium です。"
               f"種別の誤りは幾何では見分けられないので、実写で確認してください")
@@ -165,7 +181,11 @@ def cmd_arrange(args: argparse.Namespace) -> int:
         return 2
 
     layout = roomplan.load(room)
-    fixes = segment.load_box_fixes(args.fix_boxes) if args.fix_boxes else None
+    # 端末が書いた訂正をそのまま使う。指定が無ければバンドル内の fixes.json。
+    fix_path = Path(args.fix_boxes) if args.fix_boxes else room.parent / "fixes.json"
+    fixes = segment.load_box_fixes(fix_path) if fix_path.exists() else None
+    if fixes:
+        print(f"箱の訂正 {len(fixes)} 件を {fix_path.name} から読みました", file=sys.stderr)
     boxes = segment.boxes_from_room(room, fixes=fixes)
     if not boxes:
         print("家具が検出されていません。切り分ける対象がありません。", file=sys.stderr)
@@ -187,7 +207,12 @@ def cmd_arrange(args: argparse.Namespace) -> int:
             part = res.parts.get(b.identifier)
             n = len(part.faces) if part else 0
             label = roomplan.FURNITURE_JA.get(b.category, b.category)
-            warn = "  要確認 (confidence medium)" if b.confidence == "medium" else ""
+            if fixes and b.identifier in fixes:
+                warn = "  補正済み"
+            elif b.confidence == "medium":
+                warn = "  要確認 (confidence medium)"
+            else:
+                warn = ""
             print(f"  {label:<8}{n:>9,} 面{warn}")
             if part is not None and n and args.parts:
                 segment.write_ply_mesh(out / f"part_{b.category}.ply", part)
