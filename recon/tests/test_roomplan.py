@@ -198,9 +198,15 @@ def test_svg_and_dxf_are_produced(square_room):
     svg = roomplan.to_svg(layout)
     assert svg.startswith("<svg")
     assert svg.rstrip().endswith("</svg>")
-    # 面積と天井高が図に出る
-    assert "12.0 m²" in svg
+    # 面積・帖数・天井高が図に出る。面積は切り捨て表示で「約」を付ける
+    assert "約 12.00 m²" in svg
+    assert "約 7.4 帖" in svg          # 12.0 / 1.62 = 7.407... -> 切り捨て
     assert "2400 mm" in svg
+    assert "内法実測" in svg
+    # 但し書きが図の中に入る（別紙にすると図だけが流通する）
+    assert "壁芯面積ではありません" in svg
+    assert "販売対象ではありません" in svg
+    assert "現況と異なる場合があります" in svg
 
     dxf = roomplan.to_dxf(layout)
     assert dxf.startswith("0\nSECTION")
@@ -223,3 +229,68 @@ def test_open_walls_fall_back_to_bounding_box(tmp_path):
     assert layout.polygon is None
     assert layout.area == pytest.approx(12.0, abs=0.05)
     assert "外接矩形" in roomplan.summary(layout)
+
+
+def test_area_display_never_overstates():
+    """面積表示は小数第 2 位以下を切り捨てる。
+
+    公正競争規約が禁じるのは実際より有利な誤認なので、切り上げ・四捨五入は
+    使えない。11.288 を 11.29 と書くと実際より広い。
+    """
+    assert roomplan.display_area(11.288) == pytest.approx(11.28)
+    assert roomplan.display_area(11.999) == pytest.approx(11.99)
+    assert roomplan.display_area(12.0) == pytest.approx(12.0)
+
+
+def test_tatami_display_keeps_one_mat_at_least_1_62():
+    """帖数は切り捨てる。畳 1 枚が 1.62 m2 以上ある意味で使う定めのため。
+
+    11.288 / 1.62 = 6.968... なので 6.9 帖。7.0 帖と書くと
+    1 枚あたり 1.612 m2 になり 1.62 を下回る。
+    """
+    assert roomplan.display_tatami(11.288) == pytest.approx(6.9)
+    assert 6.9 * roomplan.TATAMI_AREA <= 11.288
+    assert 7.0 * roomplan.TATAMI_AREA > 11.288
+    # ちょうど割り切れる場合は切り捨てても減らない
+    assert roomplan.display_tatami(6 * 1.62) == pytest.approx(6.0)
+
+
+def test_section_label_becomes_a_room_name(square_room):
+    """RoomPlan の section から室名を取る。無ければ「居室」。"""
+    data = json.loads(square_room.read_text())
+    data["sections"] = [{"label": "bedroom", "center": [2.0, 1.0, 1.5], "story": 0}]
+    square_room.write_text(json.dumps(data))
+    layout = roomplan.load(square_room)
+    assert layout.room_name == "洋室"
+    assert "洋室" in roomplan.to_svg(layout)
+
+    data["sections"] = []
+    square_room.write_text(json.dumps(data))
+    assert roomplan.load(square_room).room_name == "居室"
+
+
+def test_floor_polygon_is_read_but_not_used_for_area(square_room):
+    """`floors` の外形は照合用に読むが、面積そのものには使わない。
+
+    実データでは壁からの内法 11.288 m2 と床の多角形 11.29 m2 が一致する。
+    ここでは意図的に食い違う床を与えて、面積が壁側から出ることを押さえる。
+    """
+    data = json.loads(square_room.read_text())
+    data["floors"] = [{
+        "identifier": "F",
+        "category": {"floor": {}},
+        "confidence": {"high": {}},
+        "dimensions": [5.0, 4.0, 0.0],
+        "transform": _column_major([[1, 0, 0, 2.0], [0, 0, 1, 0.0],
+                                    [0, -1, 0, 1.5], [0, 0, 0, 1]]),
+        "polygonCorners": [[-2.5, -2.0, 0.0], [2.5, -2.0, 0.0],
+                           [2.5, 2.0, 0.0], [-2.5, 2.0, 0.0]],
+        "completedEdges": [],
+        "curve": None,
+    }]
+    square_room.write_text(json.dumps(data))
+    layout = roomplan.load(square_room)
+    assert layout.floor_polygon is not None
+    assert layout.floor_area == pytest.approx(20.0, abs=0.1)
+    # 面積は壁からの内法のまま
+    assert layout.area == pytest.approx(12.0, abs=0.05)

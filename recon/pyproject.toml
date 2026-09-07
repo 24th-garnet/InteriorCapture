@@ -16,6 +16,7 @@ mdr2colmap = "mdr2colmap.cli:main"
 dev = [
     "matplotlib>=3.11.1",
     "pytest>=8.0",
+    "svglib>=2.2.0",
 ]
 
 [build-system]
