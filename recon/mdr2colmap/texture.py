@@ -234,7 +234,7 @@ def bake(
     )
 
 
-def _fill_holes(tex: np.ndarray, filled: np.ndarray, iterations: int = 4) -> np.ndarray:
+def _fill_holes(tex: np.ndarray, filled: np.ndarray, iterations: int = 10) -> np.ndarray:
     """色が入らなかったテクセルを近傍から埋める。
 
     UV チャートの縁は、テクスチャ補間時に隣のチャートの色を拾って

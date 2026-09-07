@@ -93,7 +93,17 @@
     pack.bruteForce = false;
     pack.padding = 2;   // チャート境界のにじみを防ぐ
 
-    xatlas::Generate(atlas, xatlas::ChartOptions(), pack);
+    // **チャート成長の反復を止める。** 既定の 1 回でも展開時間が倍になるのに、
+    // 得られる品質差がない。実測（179,022 面）:
+    //
+    //   既定      20.5s  テクセル密度のばらつき 0.93〜1.02 倍  1テクセル 4.68mm
+    //   反復なし   9.9s  同 0.93〜1.01 倍                     同 4.85mm
+    //
+    // 焼き込み時間の 97% が UV 展開なので、ここが唯一のレバーになる。
+    // チャートを粗くまとめる方向（maxCost / 各種 weight）は逆効果だった。
+    xatlas::ChartOptions chart;
+    chart.maxIterations = 0;
+    xatlas::Generate(atlas, chart, pack);
 
     if (atlas->meshCount == 0) {
         xatlas::Destroy(atlas);

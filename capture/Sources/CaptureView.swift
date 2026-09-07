@@ -1,5 +1,6 @@
 import ARKit
 import RealityKit
+import Combine
 import SwiftUI
 
 /// ARView を SwiftUI に載せる。
@@ -26,6 +27,8 @@ struct ARViewContainer: UIViewRepresentable {
 struct CaptureView: View {
     @StateObject private var capture = CaptureSession()
     @State private var showProbe = false
+    /// RoomPlan と同居できるかの実測。撮影経路を作り直す前に潰しておく。
+    @StateObject private var coexist = CoexistProbeBox()
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -70,8 +73,12 @@ struct CaptureView: View {
             Button {
                 showProbe = true
             } label: {
-                Image(systemName: "info.circle")
+                // アイコンだけだと見つけられない。文字を添える。
+                Label("診断", systemImage: "wrench.and.screwdriver")
+                    .labelStyle(.titleAndIcon)
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
         }
         .font(.system(.caption, design: .monospaced))
         .padding(10)
@@ -164,15 +171,80 @@ struct CaptureView: View {
     private var probeSheet: some View {
         NavigationStack {
             ScrollView {
-                Text(capture.probe?.summary ?? "取得中")
-                    .font(.system(.footnote, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
+                VStack(alignment: .leading, spacing: 18) {
+                    Text(capture.probe?.summary ?? "取得中")
+                        .font(.system(.footnote, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if #available(iOS 17.0, *) {
+                        Divider()
+                        coexistSection
+                    }
+                }
+                .padding()
             }
             .navigationTitle("実機診断")
             .toolbar {
                 Button("閉じる") { showProbe = false }
             }
+        }
+    }
+}
+
+
+// MARK: - RoomPlan 同居の実測
+
+/// `CoexistProbe` は iOS 17 以降にしか存在しないので、`@StateObject` に直接
+/// 置けない（プロパティ宣言に availability を付けられない）。箱に包んで逃がす。
+@MainActor
+final class CoexistProbeBox: ObservableObject {
+    @Published var status = "未実行"
+    @Published var running = false
+    private var probe: AnyObject?
+    private var observers: [Any] = []
+
+    @available(iOS 17.0, *)
+    private var typed: CoexistProbe {
+        if let p = probe as? CoexistProbe { return p }
+        let p = CoexistProbe(duration: 30)
+        probe = p
+        // 箱の @Published へ橋渡しする
+        observers.append(p.$status.sink { [weak self] in self?.status = $0 })
+        observers.append(p.$running.sink { [weak self] in self?.running = $0 })
+        return p
+    }
+
+    func run(withRoomPlan: Bool, reapplyDepth: Bool = false) {
+        if #available(iOS 17.0, *) {
+            typed.run(withRoomPlan: withRoomPlan, reapplyDepth: reapplyDepth)
+        }
+    }
+}
+
+extension CaptureView {
+    @available(iOS 17.0, *)
+    var coexistSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("RoomPlan 同居の実測").font(.headline)
+            Text("30 秒ずつ 2 回。部屋を同じように回してください。\n"
+                 + "測るのは所要時間ではなく採用フレーム数です。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Button("なしで 30 秒") { coexist.run(withRoomPlan: false) }
+                    .buttonStyle(.borderedProminent)
+                Button("ありで 30 秒") { coexist.run(withRoomPlan: true) }
+                    .buttonStyle(.bordered)
+                Button("あり＋深度再適用") {
+                    coexist.run(withRoomPlan: true, reapplyDepth: true)
+                }
+                .buttonStyle(.borderedProminent).tint(.orange)
+            }
+            .disabled(coexist.running)
+            Text(coexist.status)
+                .font(.system(.footnote, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("結果は Documents/coexist_probe.json に残ります")
+                .font(.caption2).foregroundStyle(.secondary)
         }
     }
 }

@@ -1,4 +1,5 @@
 import ARKit
+import UIKit
 import Combine
 import Foundation
 import simd
@@ -291,9 +292,34 @@ extension CaptureSession {
                 // USDZ が失敗しても GLB は残っているので撮影成果は失われない
                 print("USDZ 書き出しに失敗: \(error.localizedDescription)")
             }
-            let summary = String(format: "%.0f 秒 / %d 三角形 / 未着色 %.1f%%",
+            // 内訳をバンドルに残す。画面を目視して口頭で伝える運用は、
+            // この案件で繰り返し測定ミスの原因になっている。機械で読める形に置く。
+            let stats: [String: Any] = [
+                "elapsed_sec": result.elapsed,
+                "stages_sec": [
+                    "unwrap": result.timings.unwrap,
+                    "rasterize": result.timings.rasterize,
+                    "project": result.timings.project,
+                    "resolve": result.timings.resolve,
+                ],
+                "triangles": result.indices.count / 3,
+                "vertices": result.vertices.count,
+                "atlas_size": result.atlasSize,
+                "frames": frames.count,
+                "unfilled_ratio": Double(result.unfilledRatio),
+                "device": UIDevice.current.systemName + " " + UIDevice.current.systemVersion,
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: stats,
+                                                      options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: bundleURL.appendingPathComponent("bake.json"))
+            }
+
+            let summary = String(format: "%.0f 秒 / %d 三角形 / 未着色 %.1f%%\n%@ / %d フレーム",
                                  result.elapsed, result.indices.count / 3,
-                                 result.unfilledRatio * 100)
+                                 result.unfilledRatio * 100,
+                                 result.timings.summary, frames.count)
+            print("焼き込み内訳: \(result.timings.summary) / 合計 " +
+                  String(format: "%.1f", result.elapsed) + "s")
             publish { $0.bakeProgress = nil; $0.bakeSummary = summary }
         } catch {
             publish { $0.bakeProgress = nil; $0.bakeSummary = "焼き込み失敗: \(error.localizedDescription)" }

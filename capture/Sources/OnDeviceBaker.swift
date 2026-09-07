@@ -21,6 +21,24 @@ final class OnDeviceBaker {
         let atlasSize: Int
         let unfilledRatio: Float
         let elapsed: TimeInterval
+        /// 段階ごとの所要秒。
+        ///
+        /// **どこを削るべきかは実機で測らないと決まらない。** Mac 移植版では
+        /// UV 展開 35% / 投影 64% だったが、iPad は投影を Metal で回すぶん
+        /// 比率が違うはず。移植版の数字で iOS の設計を決めてはいけない。
+        let timings: Timings
+    }
+
+    struct Timings {
+        var unwrap: TimeInterval = 0
+        var rasterize: TimeInterval = 0
+        var project: TimeInterval = 0
+        var resolve: TimeInterval = 0
+
+        var summary: String {
+            String(format: "展開 %.1f / ラスタ %.1f / 投影 %.1f / 解決 %.1f",
+                   unwrap, rasterize, project, resolve)
+        }
     }
 
     enum BakeError: LocalizedError {
@@ -78,6 +96,13 @@ final class OnDeviceBaker {
         progress: ((Int, Int) -> Void)? = nil
     ) throws -> Result {
         let start = CFAbsoluteTimeGetCurrent()
+        var timings = Timings()
+        var mark = start
+        func lap() -> TimeInterval {
+            let now = CFAbsoluteTimeGetCurrent()
+            defer { mark = now }
+            return now - mark
+        }
 
         // 1. UV 展開（xatlas / C++）
         guard let atlas = meshVertices.withUnsafeBufferPointer({ vp in
@@ -109,6 +134,7 @@ final class OnDeviceBaker {
             uvs[i] = SIMD2(atlas.uvs[i * 2], atlas.uvs[i * 2 + 1])
         }
         let indices: [UInt32] = Array(UnsafeBufferPointer(start: atlas.indices, count: Int(atlas.indexCount)))
+        timings.unwrap = lap()
 
         // 2. アトラスのラスタライズ（テクセル → world 座標と法線）
         let texels = atlasSize * atlasSize
@@ -129,6 +155,7 @@ final class OnDeviceBaker {
         runRasterize(vBuf, uvBuf, iBuf, posBuf, nrmBuf, validBuf,
                      triangleCount: indices.count / 3, atlasSize: atlasSize)
         zero(accumBuf, length: texels * 12)
+        timings.rasterize = lap()
 
         // 3. フレームごとに投影して重み付き加算
         let sharpnessMedian = median(frames.map { $0.sharpness }) 
@@ -140,9 +167,11 @@ final class OnDeviceBaker {
                     sharpness: max(frame.sharpness / max(sharpnessMedian, 1e-6), 0.05))
             progress?(n + 1, frames.count)
         }
+        timings.project = lap()
 
         // 4. 割り算して穴を埋める
         let texture = runResolveAndDilate(accum: accumBuf, weight: weightBuf, atlasSize: atlasSize)
+        timings.resolve = lap()
 
         let w = weightBuf.contents().assumingMemoryBound(to: Float.self)
         let v = validBuf.contents().assumingMemoryBound(to: UInt8.self)
@@ -156,7 +185,8 @@ final class OnDeviceBaker {
             vertices: vertices, uvs: uvs, indices: indices,
             texture: texture, atlasSize: atlasSize,
             unfilledRatio: validCount > 0 ? 1 - Float(filled) / Float(validCount) : 1,
-            elapsed: CFAbsoluteTimeGetCurrent() - start
+            elapsed: CFAbsoluteTimeGetCurrent() - start,
+            timings: timings
         )
     }
 
@@ -282,9 +312,20 @@ extension OnDeviceBaker {
                                 threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         }
 
-        // チャート境界のにじみを防ぐため数テクセル外側へ広げる
+        // チャート境界のにじみを防ぎ、投影が届かなかったテクセルを埋める。
+        //
+        // **回数は 10。** `maxIterations = 0` にすると展開は倍速になるが、
+        // チャートの形が悪くなり、どのフレームからも投影が届かないテクセルが増える
+        // （黒テクセル 3.1% -> 5.1%）。4 回では埋まりきらず黒い斑点として見える。
+        // 10 回にすると 0.3% まで下がり、既定設定（3.1%）より良くなる:
+        //
+        //   iters=1 / 4 回   黒 3.1%   塊 2.07%
+        //   iters=0 / 4 回   黒 5.1%   塊 3.14%
+        //   iters=0 / 10 回  黒 0.3%   塊 0.19%
+        //
+        // GPU の 1 パスなので追加コストは無視できる。
         var src = a, dst = b
-        for _ in 0..<4 {
+        for _ in 0..<10 {
             encode { enc in
                 enc.setComputePipelineState(dilate)
                 enc.setBuffer(src, offset: 0, index: 0)
