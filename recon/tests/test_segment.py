@@ -431,3 +431,94 @@ def test_box_fix_shifts_the_center(tmp_path):
     # 補正の対象でない箱は動かない
     other = segment.boxes_from_room(room, fixes={"別の識別子": {"dz": -1.0}})[0]
     assert other.center == pytest.approx(plain.center)
+
+
+def _strip(y, x0, x1, z=0.0, step=0.05):
+    """X 方向に辺を共有して連なる三角形の帯を作る。戻り値は (頂点, 面)。"""
+    xs = np.arange(x0, x1 + 1e-9, step)
+    verts, faces = [], []
+    for i, x in enumerate(xs):
+        verts += [[x, y, z - 0.02], [x, y, z + 0.02]]
+        if i:
+            a, b = 2 * (i - 1), 2 * (i - 1) + 1
+            faces += [[a, b, a + 2], [b, a + 3, a + 2]]
+    return (np.array(verts, np.float32),
+            np.array(faces, np.int64).reshape(-1, 3))
+
+
+def test_grow_takes_the_part_sticking_out_of_the_box():
+    """箱からはみ出した部分が、辺の隣接をたどって取り込まれる。
+
+    椅子の実測: 箱の幅 539mm に対しアームレストが片側 +14.3cm はみ出し、
+    750 面 (0.251 m2) が部屋側に残った。動かすと破片が置き去りになる。
+    """
+    V, F = _strip(0.5, -0.20, 0.34)          # 箱は |x| <= 0.20
+    box = segment.Box("B", "chair", np.array([0.0, 0.5, 0.0]), np.eye(3),
+                      np.array([0.20, 0.5, 0.10]))
+    cen = V[F].mean(axis=1)
+    plain = segment.assign_faces(cen, [box], floor_y=0.0)
+    a = segment.assign_faces(cen, [box], floor_y=0.0,
+                             adj=segment.face_adjacency(F, V))
+    assert int((a == 0).sum()) > int((plain == 0).sum()), "はみ出した帯を取り込むべき"
+    over = cen[a == 0][:, 0]
+    assert over.max() > 0.20 * segment.BOX_INFLATE, "箱の外まで伸びている"
+    assert over.max() <= 0.20 + segment.GROW_MARGIN + 1e-6, "範囲の外へは行かない"
+
+
+def test_grow_stops_at_the_margin():
+    """繋がっていても、箱の外側 GROW_MARGIN を越えたら取り込まない。
+
+    溶接後のメッシュでは机・椅子・ベッドが 1 つの連結成分だった。
+    範囲を切らないと部屋全体へ流れる。
+    """
+    V, F = _strip(0.5, -0.20, 1.50)
+    box = segment.Box("B", "chair", np.array([0.0, 0.5, 0.0]), np.eye(3),
+                      np.array([0.20, 0.5, 0.10]))
+    cen = V[F].mean(axis=1)
+    a = segment.assign_faces(cen, [box], floor_y=0.0,
+                             adj=segment.face_adjacency(F, V))
+    assert cen[a == 0][:, 0].max() <= 0.20 + segment.GROW_MARGIN + 1e-6
+    assert int((a < 0).sum()) > 0, "遠い側は部屋に残る"
+
+
+def test_grow_does_not_cross_the_floor():
+    """床に近い水平面は障壁になり、そこから先へは広がらない。
+
+    椅子のキャスターはラグに接している。障壁を置かないと床の混入が
+    0.503 -> 0.722 m2、壁の混入が 0.467 -> 0.969 m2 に増えた（実測）。
+    """
+    # 箱の中の種（床上 0.3m）から、床上 3cm の水平な帯（床/ラグ）へ繋がる形。
+    seed_v, seed_f = _strip(0.30, -0.10, 0.10)
+    floor_v, floor_f = _strip(0.03, -0.20, 0.60)
+    V = np.vstack([seed_v, floor_v]).astype(np.float32)
+    F = np.vstack([seed_f, floor_f + len(seed_v)]).astype(np.int64)
+    # 種と床の帯を 1 枚の面で繋ぐ（辺の共有ではなく頂点の共有で足りる場所は
+    # 隣接表に出ないので、明示的に橋を架ける）
+    bridge = np.array([[0, 1, len(seed_v)]], np.int64)
+    F = np.vstack([F, bridge])
+    box = segment.Box("B", "chair", np.array([0.0, 0.3, 0.0]), np.eye(3),
+                      np.array([0.20, 0.3, 0.10]))
+    cen = V[F].mean(axis=1)
+    tri = V[F]
+    nrm = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-12)
+    walls = [_Wall([-5.0, -5.0], [-5.0, 5.0]), _Wall([5.0, -5.0], [5.0, 5.0])]
+    a = segment.assign_faces(cen, [box], floor_y=0.0, walls=walls, ceiling_y=2.4,
+                             normals=nrm, adj=segment.face_adjacency(F, V))
+    taken = cen[a == 0]
+    assert not ((taken[:, 1] < 0.10) & (np.abs(taken[:, 0]) > 0.21)).any(), \
+        "床の帯を箱の外まで辿ってはいけない"
+
+
+def test_grow_needs_edge_adjacency():
+    """辺で繋がっていない島は取り込まない。距離だけでは判定しない。"""
+    V, F = _strip(0.5, -0.20, 0.10)
+    island_v, island_f = _strip(0.5, 0.26, 0.40)
+    V2 = np.vstack([V, island_v]).astype(np.float32)
+    F2 = np.vstack([F, island_f + len(V)]).astype(np.int64)
+    box = segment.Box("B", "chair", np.array([0.0, 0.5, 0.0]), np.eye(3),
+                      np.array([0.20, 0.5, 0.10]))
+    cen = V2[F2].mean(axis=1)
+    a = segment.assign_faces(cen, [box], floor_y=0.0,
+                             adj=segment.face_adjacency(F2, V2))
+    assert (cen[a == 0][:, 0] < 0.25).all(), "離れた島は取り込まない"

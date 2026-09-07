@@ -153,7 +153,8 @@ def environment_mask(centroids: np.ndarray, floor_y: float, ceiling_y: float,
 def assign_faces(centroids: np.ndarray, boxes: list[Box], floor_y: float,
                  floor_margin: float = FLOOR_MARGIN,
                  walls=None, ceiling_y: float | None = None,
-                 normals: np.ndarray | None = None) -> np.ndarray:
+                 normals: np.ndarray | None = None,
+                 adj: list[list[int]] | None = None) -> np.ndarray:
     """面（の重心）を家具に振り分ける。戻り値は箱の添字、-1 は部屋。
 
     `walls` と `ceiling_y` を渡すと:
@@ -203,6 +204,16 @@ def assign_faces(centroids: np.ndarray, boxes: list[Box], floor_y: float,
     has = np.isfinite(cost).any(axis=1)
     assigned = np.where(has & ~env, best.astype(np.int32), -1).astype(np.int32)
 
+    if adj is not None:
+        # 箱からはみ出した部分を、隣接をたどって取り込む。運搬より先に行う。
+        # 後にすると、荷物として運んだ面から生えて範囲が読めなくなる。
+        barrier = (room_like(centroids, normals, floor_y, walls)
+                   if normals is not None and walls is not None else None)
+        for i, b in enumerate(boxes):
+            add = grow_mask(b, centroids, assigned == i, (assigned < 0) & ~env,
+                            adj, barrier=barrier)
+            assigned[add] = i
+
     if walls is not None and ceiling_y is not None:
         # 箱の割り当てが終わってから運ぶ。先に運ぶと、隣の家具を
         # 荷物として奪い合う。
@@ -228,7 +239,7 @@ def split_mesh(mesh: Mesh, boxes: list[Box], floor_y: float,
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
     near_floor = centroids[:, 1] < floor_y + floor_margin
     assigned = assign_faces(centroids, boxes, floor_y, floor_margin, walls, ceiling_y,
-                            normals=normals)
+                            normals=normals, adj=face_adjacency(F, V))
 
     parts: dict[str, Mesh] = {}
     counts: dict[str, int] = {}
@@ -521,7 +532,7 @@ def split_textured(tm, boxes: list[Box], floor_y: float,
     normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
     assigned = assign_faces(centroids, boxes, floor_y, floor_margin, walls, ceiling_y,
-                            normals=normals)
+                            normals=normals, adj=face_adjacency(F, V))
 
     def take(mask: np.ndarray):
         faces = F[mask]
@@ -679,6 +690,29 @@ WALL_CLEARANCE = 0.10
 WALL_BAND = 0.04
 #: 天井帯。天井付近の面も家具に含めない。
 CEILING_BAND = 0.10
+#: 箱からはみ出した部分を、メッシュの隣接をたどって取り込む距離。
+#:
+#: **RoomPlan の寸法は物体の外形より小さいことがある。** 実測（room-33d49373）で
+#: 椅子の箱は幅 539mm だが、アームレストが片側 +14.3cm はみ出しており、
+#: 750 面 (0.251 m2) が部屋側に残った。動かすと椅子の破片が置き去りになる。
+#:
+#: 箱を膨らませて解こうとすると机と床を巻き込む。**面の隣接をたどれば、
+#: 実際に椅子とつながっている面だけを取り込める。** 床・壁の帯と他の家具は
+#: 候補から外すので、そこで自然に止まる。
+GROW_MARGIN = 0.15
+#: 取り込みの障壁。**床に近い水平面と壁に近い垂直面は部屋とみなして越えない。**
+#:
+#: 環境帯（4cm）だけでは足りない。実測（room-33d49373）で、障壁なしの取り込みは
+#: 床の混入を 0.503 -> 0.722 m2、壁の混入を 0.467 -> 0.969 m2 に増やした。
+#: 椅子のキャスターがラグに接しているので、そこから床へ流れ出る。
+#:
+#: 代償として、箱の外にあるキャスターの先端（床上 10cm 未満の水平面）は
+#: 取り込めない。ラグを持って行くより、爪先を残すほうが良い。
+GROW_ROOM_BAND = 0.10
+#: 床とみなす法線の垂直成分（これ以上なら水平面）。
+GROW_FLOOR_NORMAL = 0.85
+#: 壁とみなす法線の垂直成分（これ以下なら垂直面）。
+GROW_WALL_NORMAL = 0.35
 #: 箱の上端からこの距離以内にある水平な面を「天板」とみなす。
 TOP_TOL = 0.05
 #: 天板と認める法線の垂直成分。
@@ -701,6 +735,75 @@ def _wall_distance(points: np.ndarray, walls) -> np.ndarray:
         t = np.clip(((xz - w.p0) @ seg) / l2, 0.0, 1.0)
         d = np.minimum(d, np.linalg.norm(xz - (w.p0 + t[:, None] * seg), axis=1))
     return d
+
+
+def face_adjacency(faces: np.ndarray, vertices: np.ndarray,
+                   weld: float = 0.001) -> list[list[int]]:
+    """辺を共有する面の隣接表。
+
+    ARKit のメッシュはアンカーの境目で頂点が重複するので、位置を `weld` で
+    量子化してから辺を作る。しないとアンカーを跨いだ隣接が切れる。
+    """
+    key = np.round(vertices.astype(np.float64) / weld).astype(np.int64)
+    _, inv = np.unique(key, axis=0, return_inverse=True)
+    f = inv.reshape(-1)[faces]
+    e = np.sort(np.vstack([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1)
+    fid = np.tile(np.arange(len(faces)), 3)
+    order = np.lexsort((e[:, 1], e[:, 0]))
+    e, fid = e[order], fid[order]
+    same = np.all(e[1:] == e[:-1], axis=1)
+    adj: list[list[int]] = [[] for _ in range(len(faces))]
+    for i in np.nonzero(same)[0]:
+        x, y = int(fid[i]), int(fid[i + 1])
+        adj[x].append(y)
+        adj[y].append(x)
+    return adj
+
+
+def room_like(centroids: np.ndarray, normals: np.ndarray, floor_y: float,
+              walls, band: float = GROW_ROOM_BAND) -> np.ndarray:
+    """部屋の面（床・ラグ・壁）とみなせる面。取り込みの障壁になる。
+
+    「近い」だけでは家具の脚も引っかかる。**向きも見る。** 床は水平、
+    壁は垂直なので、法線が合っていて近いものだけを部屋とする。
+    """
+    flat = np.abs(normals[:, 1]) > GROW_FLOOR_NORMAL
+    upright = np.abs(normals[:, 1]) < GROW_WALL_NORMAL
+    return ((flat & (centroids[:, 1] - floor_y < band))
+            | (upright & (_wall_distance(centroids, walls) < band)))
+
+
+def grow_mask(box: Box, centroids: np.ndarray, seed: np.ndarray,
+              available: np.ndarray, adj: list[list[int]],
+              barrier: np.ndarray | None = None,
+              margin: float = GROW_MARGIN) -> np.ndarray:
+    """箱の中の面から辺をたどって、はみ出した部分を取り込む。
+
+    `seed` はすでにこの箱に属している面、`available` はまだどの家具にも
+    属さず環境帯でもない面、`barrier` は越えてはいけない面（`room_like`）。
+    取り込む範囲は箱の外側 `margin` までに限る。
+    **範囲を切らないと、繋がったメッシュを伝って部屋全体に流れる**
+    （実測で机・椅子・ベッドは溶接後も 1 つの連結成分だった）。
+    """
+    from collections import deque
+
+    local = np.abs((centroids - box.center) @ box.axes)
+    near = np.all(local <= box.half + margin, axis=1)
+    cand = available & near
+    if barrier is not None:
+        cand = cand & ~barrier
+    out = np.zeros(len(centroids), bool)
+    q = deque(int(i) for i in np.nonzero(seed)[0])
+    seen = seed.copy()
+    while q:
+        i = q.popleft()
+        for nb in adj[i]:
+            if seen[nb] or not cand[nb]:
+                continue
+            seen[nb] = True
+            out[nb] = True
+            q.append(nb)
+    return out
 
 
 def carry_mask(box: Box, centroids: np.ndarray, available: np.ndarray,
