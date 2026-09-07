@@ -13,8 +13,14 @@ targets:
     sources:
       - Sources
       - path: Vendor/xatlas
-        # xatlas は依存のない単一ファイルの C++。警告は抑える（自前のコードではない）
-        compilerFlags: "-w"
+        # xatlas は依存のない単一ファイルの C++。警告は抑える（自前のコードではない）。
+        #
+        # **Debug でも -O2 で通す。** 焼き込み時間の 97% が xatlas の UV 展開で、
+        # Debug の GCC_OPTIMIZATION_LEVEL = 0 では実測 6.5 倍遅くなる
+        # （room-33d49373 の 148,897 面で -O0 49.62 秒 / -O2 7.68 秒）。
+        # 外部の数値コードを段階実行することはないので、最適化を落とす利点がない。
+        # 構成ごとの設定より後に付くので、こちらが勝つ。
+        compilerFlags: "-w -O2"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.garnet.madoriba.capture
