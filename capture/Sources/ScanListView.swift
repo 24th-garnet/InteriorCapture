@@ -109,6 +109,10 @@ struct ScanListView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            if let e = scan.bakeElapsedSec, let u = scan.bakeUnwrapSec {
+                label(String(format: "焼き込み %.1f 秒（展開 %.1f）", e, u)
+                      + (scan.bakeThermal.map { "　温度 \($0)" } ?? ""))
+            }
             HStack(spacing: 8) {
                 if let n = scan.frameCount {
                     label("\(n) フレーム")
@@ -123,6 +127,10 @@ struct ScanListView: View {
                 }
                 if scan.north != nil { badge("方位", .blue) }
                 if scan.hasFixes { badge("訂正済", .green) }
+                if let c = scan.bakeConfiguration, c != "Release" { badge(c, .orange) }
+                if let x = scan.bakeSlowdown, x > BuildInfo.Metrics.slowdownAlarm {
+                    badge(String(format: "展開 %.1f 倍", x), .red)
+                }
             }
             HStack(spacing: 10) {
                 Button {

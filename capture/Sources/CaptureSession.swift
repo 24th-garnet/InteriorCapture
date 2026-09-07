@@ -396,6 +396,16 @@ extension CaptureSession {
                 "frames": frames.count,
                 "unfilled_ratio": Double(result.unfilledRatio),
                 "device": UIDevice.current.systemName + " " + UIDevice.current.systemVersion,
+                // **性能を語る前に構成を記録する。** Debug で入れると xatlas が
+                // 最適化なしになり、実測 6.5 倍遅くなる（BuildInfo 参照）。
+                "build_configuration": BuildInfo.configuration,
+                "xatlas_flags": BuildInfo.xatlasFlags,
+                "thermal_state": BuildInfo.thermalStateName,
+                // 面数はスキャンごとに変わるので、秒数だけでは速いか遅いか
+                // 分からない。面で割った値が構成に依存しない検出指標になる。
+                "unwrap_us_per_triangle": BuildInfo.Metrics.unwrapMicrosecondsPerTriangle(
+                    unwrapSec: result.timings.unwrap,
+                    triangles: result.indices.count / 3) ?? 0,
             ]
             if let data = try? JSONSerialization.data(withJSONObject: stats,
                                                       options: [.prettyPrinted, .sortedKeys]) {
@@ -406,6 +416,12 @@ extension CaptureSession {
                                  result.elapsed, result.indices.count / 3,
                                  result.unfilledRatio * 100,
                                  result.timings.summary, frames.count)
+            if let x = BuildInfo.Metrics.slowdown(unwrapSec: result.timings.unwrap,
+                                                 triangles: result.indices.count / 3),
+               x > BuildInfo.Metrics.slowdownAlarm {
+                print("警告: UV 展開が基準の \(String(format: "%.1f", x)) 倍遅い。"
+                      + "構成 \(BuildInfo.configuration) / 温度 \(BuildInfo.thermalStateName)")
+            }
             print("焼き込み内訳: \(result.timings.summary) / 合計 " +
                   String(format: "%.1f", result.elapsed) + "s")
             publish { $0.bakeProgress = nil; $0.bakeSummary = summary }

@@ -31,6 +31,19 @@ final class ScanLibrary: ObservableObject {
         var hasUSDZ = false        // mesh.usdz（Quick Look で開ける）
         var hasGLB = false
         var hasFixes = false       // 人手の訂正が保存済み
+
+        // 焼き込みの素性（bake.json）。**遅かった撮影を後から見分けるため。**
+        var bakeElapsedSec: Double?
+        var bakeUnwrapSec: Double?
+        var bakeTriangles: Int?
+        var bakeConfiguration: String?
+        var bakeThermal: String?
+
+        /// UV 展開が基準の何倍か。3 倍を超えたら最適化なしか熱を疑う。
+        var bakeSlowdown: Double? {
+            guard let u = bakeUnwrapSec, let t = bakeTriangles else { return nil }
+            return BuildInfo.Metrics.slowdown(unwrapSec: u, triangles: t)
+        }
         /// バイト数。走査に時間がかかるので後から埋める。
         var byteSize: Int64?
 
@@ -125,6 +138,16 @@ final class ScanLibrary: ObservableObject {
                 }
                 if let s = m["created_at"] as? String {
                     scan.createdAt = ScanLibrary.parseDate(s)
+                }
+            }
+            if let data = try? Data(contentsOf: url.appendingPathComponent("bake.json")),
+               let b = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                scan.bakeElapsedSec = b["elapsed_sec"] as? Double
+                scan.bakeTriangles = b["triangles"] as? Int
+                scan.bakeConfiguration = b["build_configuration"] as? String
+                scan.bakeThermal = b["thermal_state"] as? String
+                if let stages = b["stages_sec"] as? [String: Any] {
+                    scan.bakeUnwrapSec = stages["unwrap"] as? Double
                 }
             }
             if scan.createdAt == nil {

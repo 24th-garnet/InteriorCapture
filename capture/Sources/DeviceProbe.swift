@@ -19,6 +19,8 @@ enum DeviceProbe {
 
         var summary: String {
             var out = ["device: \(model)  os: \(os)"]
+            // 性能の話をするときに構成が分からないと原因を追えない。
+            out.append(BuildInfo.summary)
             out.append("LiDAR: \(hasLiDAR)  sceneDepth: \(supportsSceneDepth)  mesh: \(supportsSceneReconstruction)")
             out.append("videoFormats:")
             for f in videoFormats {

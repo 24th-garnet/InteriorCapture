@@ -8,7 +8,7 @@ import XCTest
 /// 触るまで気づけないので、走査の部分をここで固定する。
 final class ScanLibraryTests: XCTestCase {
 
-    private var root: URL!
+    var root: URL!
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory
@@ -20,7 +20,7 @@ final class ScanLibraryTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    private func makeBundle(_ name: String, manifest: [String: Any]?,
+    func makeBundle(_ name: String, manifest: [String: Any]?,
                             files: [String] = []) throws -> URL {
         let url = root.appendingPathComponent(name)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -114,5 +114,64 @@ final class ScanLibraryTests: XCTestCase {
         XCTAssertEqual(scan.title, "room-e")
         XCTAssertNil(scan.frameCount)
         XCTAssertNotNil(scan.createdAt, "日付はファイルの更新時刻で埋める")
+    }
+}
+
+// MARK: 焼き込みの素性
+
+extension ScanLibraryTests {
+
+    /// bake.json から構成と展開時間を読み、遅さを**構成の記憶に頼らず**判定する。
+    func testBakeProvenanceIsRead() throws {
+        let url = try makeBundle("room-bake.mdr", manifest: nil)
+        try JSONSerialization.data(withJSONObject: [
+            "elapsed_sec": 14.54,
+            "triangles": 148_897,
+            "build_configuration": "Release",
+            "thermal_state": "fair",
+            "stages_sec": ["unwrap": 13.91, "rasterize": 0.07,
+                           "project": 0.49, "resolve": 0.04],
+        ]).write(to: url.appendingPathComponent("bake.json"))
+
+        let scan = try XCTUnwrap(ScanLibrary.enumerate(in: root).first)
+        XCTAssertEqual(try XCTUnwrap(scan.bakeUnwrapSec), 13.91, accuracy: 0.01)
+        XCTAssertEqual(scan.bakeTriangles, 148_897)
+        XCTAssertEqual(scan.bakeConfiguration, "Release")
+        XCTAssertEqual(scan.bakeThermal, "fair")
+        // 実測の基準そのものなので 1 倍付近になる
+        let x = try XCTUnwrap(scan.bakeSlowdown)
+        XCTAssertEqual(x, 1.0, accuracy: 0.05)
+        XCTAssertLessThan(x, BuildInfo.Metrics.slowdownAlarm)
+    }
+
+    /// -O0 の実測（同じ面数で 6.5 倍）を入れたら異常として出る。
+    func testUnoptimizedBakeIsFlagged() throws {
+        let url = try makeBundle("room-slow.mdr", manifest: nil)
+        try JSONSerialization.data(withJSONObject: [
+            "triangles": 148_897,
+            "build_configuration": "Debug",
+            "stages_sec": ["unwrap": 13.91 * 6.5],
+        ]).write(to: url.appendingPathComponent("bake.json"))
+
+        let scan = try XCTUnwrap(ScanLibrary.enumerate(in: root).first)
+        let x = try XCTUnwrap(scan.bakeSlowdown)
+        XCTAssertEqual(x, 6.5, accuracy: 0.2)
+        XCTAssertGreaterThan(x, BuildInfo.Metrics.slowdownAlarm)
+    }
+
+    /// **面数で割る理由。** 面数が違う撮影を秒数で比べても速いか遅いか
+    /// 分からない。半分の面数なら半分の秒数でも同じ速さ。
+    func testSecondsAloneCannotDetectSlowness() {
+        let fast = BuildInfo.Metrics.slowdown(unwrapSec: 7.0, triangles: 74_000)
+        let slow = BuildInfo.Metrics.slowdown(unwrapSec: 7.0, triangles: 12_000)
+        XCTAssertEqual(try! XCTUnwrap(fast), 1.0, accuracy: 0.1)
+        XCTAssertGreaterThan(try! XCTUnwrap(slow), BuildInfo.Metrics.slowdownAlarm)
+    }
+
+    func testMissingBakeJSONIsNotAnError() throws {
+        _ = try makeBundle("room-nobake.mdr", manifest: nil)
+        let scan = try XCTUnwrap(ScanLibrary.enumerate(in: root).first)
+        XCTAssertNil(scan.bakeUnwrapSec)
+        XCTAssertNil(scan.bakeSlowdown)
     }
 }
