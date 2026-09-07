@@ -104,8 +104,33 @@ class SplitMesh:
     floor_excluded: int
 
 
+def assign_faces(centroids: np.ndarray, boxes: list[Box], floor_y: float,
+                 floor_margin: float = FLOOR_MARGIN,
+                 walls=None, ceiling_y: float | None = None) -> np.ndarray:
+    """面（の重心）を家具に振り分ける。戻り値は箱の添字、-1 は部屋。
+
+    `walls` と `ceiling_y` を渡すと、家具の上に乗っている物も一緒に運ぶ
+    （`carry_mask` を参照）。渡さなければ箱の中だけを取る。
+    """
+    near_floor = centroids[:, 1] < floor_y + floor_margin
+    assigned = np.full(len(centroids), -1, dtype=np.int32)
+    for i, b in enumerate(boxes):
+        inside = b.contains(centroids) & ~near_floor & (assigned < 0)
+        assigned[inside] = i
+
+    if walls is not None and ceiling_y is not None:
+        # 箱の割り当てが終わってから運ぶ。先に運ぶと、隣の家具を
+        # 荷物として奪い合う。
+        for i, b in enumerate(boxes):
+            add = carry_mask(b, centroids, (assigned < 0) & ~near_floor,
+                             walls, ceiling_y, own=(assigned == i))
+            assigned[add] = i
+    return assigned
+
+
 def split_mesh(mesh: Mesh, boxes: list[Box], floor_y: float,
-               floor_margin: float = FLOOR_MARGIN) -> SplitMesh:
+               floor_margin: float = FLOOR_MARGIN,
+               walls=None, ceiling_y: float | None = None) -> SplitMesh:
     """メッシュを家具ごとに切り分ける。
 
     面は**重心**で振り分ける。頂点単位で判定すると 1 つの面が複数の
@@ -113,14 +138,8 @@ def split_mesh(mesh: Mesh, boxes: list[Box], floor_y: float,
     """
     V, F = mesh.vertices, mesh.faces
     centroids = V[F].mean(axis=1)
-
-    # 床付近は家具に含めない
     near_floor = centroids[:, 1] < floor_y + floor_margin
-
-    assigned = np.full(len(F), -1, dtype=np.int32)
-    for i, b in enumerate(boxes):
-        inside = b.contains(centroids) & ~near_floor & (assigned < 0)
-        assigned[inside] = i
+    assigned = assign_faces(centroids, boxes, floor_y, floor_margin, walls, ceiling_y)
 
     parts: dict[str, Mesh] = {}
     counts: dict[str, int] = {}
@@ -250,13 +269,13 @@ def load_moves(path: str | Path) -> list[Move]:
 
 
 def arrange_mesh(mesh: Mesh, boxes: list[Box], floor_y: float,
-                 moves: list[Move]) -> Mesh:
+                 moves: list[Move], walls=None, ceiling_y: float | None = None) -> Mesh:
     """家具を動かした 1 枚のメッシュを返す。
 
     **編集器の識別子は先頭 8 桁に切っている**ので、前方一致で照合する。
     完全一致だけを見ると黙って何も動かない結果になる。
     """
-    split = split_mesh(mesh, boxes, floor_y)
+    split = split_mesh(mesh, boxes, floor_y, walls=walls, ceiling_y=ceiling_y)
     by_move = {m.identifier: m for m in moves}
 
     verts = [split.remainder.vertices]
@@ -392,3 +411,217 @@ def _quat_mul(q: np.ndarray, r: np.ndarray) -> np.ndarray:
         w1*y2 - x1*z2 + y1*w2 + z1*x2,
         w1*z2 + x1*y2 - y1*x2 + z1*w2,
     ], axis=1)
+
+
+# --- テクスチャ付きメッシュの分割 -------------------------------------------
+
+
+def split_textured(tm, boxes: list[Box], floor_y: float,
+                   floor_margin: float = FLOOR_MARGIN,
+                   walls=None, ceiling_y: float | None = None):
+    """テクスチャ付きメッシュを家具ごとに分ける。**UV を保つ。**
+
+    アトラスは 1 枚を共有する。UV をそのまま持ち回れば、部品ごとに
+    テクスチャを焼き直す必要がない（焼き直すと継ぎ目も変わる）。
+
+    戻り値は `(remainder, {id: part})`。各要素は `(vertices, uvs, faces)`。
+    """
+    V, F, UV = tm.vertices, tm.faces, tm.uvs
+    centroids = V[F].mean(axis=1)
+    assigned = assign_faces(centroids, boxes, floor_y, floor_margin, walls, ceiling_y)
+
+    def take(mask: np.ndarray):
+        faces = F[mask]
+        if len(faces) == 0:
+            return (np.zeros((0, 3), np.float32), np.zeros((0, 2), np.float32),
+                    np.zeros((0, 3), np.int64))
+        used = np.unique(faces)
+        remap = np.full(int(used.max()) + 1, -1, dtype=np.int64)
+        remap[used] = np.arange(len(used))
+        return V[used].copy(), UV[used].copy(), remap[faces]
+
+    parts = {}
+    for i, b in enumerate(boxes):
+        sel = assigned == i
+        if sel.any():
+            parts[b.identifier] = take(sel)
+    return take(assigned < 0), parts
+
+
+def write_multi_glb(path: str | Path, parts: list[tuple[str, tuple]],
+                    texture: np.ndarray) -> None:
+    """複数の部品を 1 つの GLB に書く。**部品ごとに別ノード**にする。
+
+    ノードを分けるのが要点。Web 側は `node.matrix` を差し替えるだけで
+    家具を動かせる。1 つのメッシュにまとめると分けて動かせない。
+
+    テクスチャは 1 枚を共有する。部品ごとに持つと 5 倍に膨らむ。
+    """
+    import io
+    import json
+    import struct
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    accessors: list[dict] = []
+    views: list[dict] = []
+    meshes: list[dict] = []
+    nodes: list[dict] = []
+
+    def put(arr: np.ndarray, target: int | None = None) -> int:
+        # glTF は 4 バイト境界を要求する
+        while buf.tell() % 4:
+            buf.write(b"\x00")
+        off = buf.tell()
+        buf.write(arr.tobytes())
+        view = {"buffer": 0, "byteOffset": off, "byteLength": buf.tell() - off}
+        if target is not None:
+            view["target"] = target
+        views.append(view)
+        return len(views) - 1
+
+    for name, (v, uv, f) in parts:
+        if len(f) == 0:
+            continue
+        vp = np.ascontiguousarray(v, "<f4")
+        vt = np.ascontiguousarray(uv, "<f4")
+        vi = np.ascontiguousarray(f, "<u4").ravel()
+
+        a_pos = len(accessors)
+        accessors.append({"bufferView": put(vp, 34962), "componentType": 5126,
+                          "count": len(vp), "type": "VEC3",
+                          "min": vp.min(axis=0).tolist(), "max": vp.max(axis=0).tolist()})
+        a_uv = len(accessors)
+        accessors.append({"bufferView": put(vt, 34962), "componentType": 5126,
+                          "count": len(vt), "type": "VEC2"})
+        a_idx = len(accessors)
+        accessors.append({"bufferView": put(vi, 34963), "componentType": 5125,
+                          "count": len(vi), "type": "SCALAR"})
+
+        meshes.append({"name": name, "primitives": [{
+            "attributes": {"POSITION": a_pos, "TEXCOORD_0": a_uv},
+            "indices": a_idx, "material": 0,
+        }]})
+        nodes.append({"name": name, "mesh": len(meshes) - 1})
+
+    img = io.BytesIO()
+    Image.fromarray(texture).save(img, format="JPEG", quality=88)
+    v_img = put(np.frombuffer(img.getvalue(), np.uint8))
+
+    while buf.tell() % 4:
+        buf.write(b"\x00")
+    blob = buf.getvalue()
+
+    gltf = {
+        "asset": {"version": "2.0", "generator": "madoriba-segment"},
+        "scene": 0,
+        "scenes": [{"nodes": list(range(len(nodes)))}],
+        "nodes": nodes,
+        "meshes": meshes,
+        "materials": [{"pbrMetallicRoughness": {
+            "baseColorTexture": {"index": 0}, "metallicFactor": 0.0,
+            "roughnessFactor": 0.9}, "doubleSided": True}],
+        "textures": [{"source": 0}],
+        "images": [{"bufferView": v_img, "mimeType": "image/jpeg"}],
+        "accessors": accessors,
+        "bufferViews": views,
+        "buffers": [{"byteLength": len(blob)}],
+    }
+
+    js = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    js += b" " * ((4 - len(js) % 4) % 4)
+
+    # fourCC は文字列から作る。手打ちの 0x46746C67 は T/t を取り違えやすい。
+    def four(s: str) -> int:
+        return int.from_bytes(s.encode("ascii"), "little")
+
+    total = 12 + 8 + len(js) + 8 + len(blob)
+    with Path(path).open("wb") as fh:
+        fh.write(struct.pack("<III", four("glTF"), 2, total))
+        fh.write(struct.pack("<II", len(js), four("JSON")))
+        fh.write(js)
+        fh.write(struct.pack("<II", len(blob), four("BIN\x00")))
+        fh.write(blob)
+
+
+# --- 上に乗っている物を一緒に運ぶ -------------------------------------------
+#
+# RoomPlan の箱は家具そのものの寸法しかないので、机の上のモニタやベッドの寝具は
+# 箱の外に出る。そのまま家具だけ動かすと**乗っていた物が空中に取り残される**。
+#
+# 素朴に「天板の上の柱」を全部運ぶと壊れる。実測（room-33d49373）では
+# ベッドの上に 9,566 面が残り、天板から +1.76m まで伸びていた。これは荷物では
+# なく壁と空間で、運ぶと壁が裂ける。
+#
+# **天板から上へ層を積み、最初に空になった層で止める。** 接触しているものだけが
+# 連続して積み上がり、離れた物との間には空白ができる。実測のテーブル:
+#
+#     +0cm 184 / +5cm 193 / ... / +45cm 110 / +50cm 0 ... +120cm 0 / +125cm 18
+#
+# +45cm まで連続（机上のモニタ）、70cm の空白、その上は壁際の別物。
+# ベッドは +30cm で、椅子は +25cm で切れた。収納は天井際なので何も乗らない。
+
+#: 層の厚み。薄すぎると 1 つの物の中で切れ、厚すぎると離れた物を巻き込む。
+CARRY_LAYER = 0.05
+#: 空白が見つからない場合の打ち切り。壁一面を運ぶ事故を防ぐ最後の砦。
+CARRY_MAX = 1.0
+#: 壁からこの距離以内は壁面とみなして運ばない。運ぶと壁が裂ける。
+WALL_CLEARANCE = 0.10
+#: 天井付近も運ばない。
+CEILING_CLEARANCE = 0.15
+#: 天板の外形をこの倍率で広げて判定する。縁に載った物を拾うため。
+FOOTPRINT_INFLATE = 1.06
+
+
+def _wall_distance(points: np.ndarray, walls) -> np.ndarray:
+    """各点から最も近い壁までの水平距離。壁は線分 × 高さの面。"""
+    d = np.full(len(points), np.inf)
+    xz = points[:, [0, 2]]
+    for w in walls:
+        seg = w.p1 - w.p0
+        l2 = float(seg @ seg)
+        if l2 < 1e-9:
+            continue
+        t = np.clip(((xz - w.p0) @ seg) / l2, 0.0, 1.0)
+        d = np.minimum(d, np.linalg.norm(xz - (w.p0 + t[:, None] * seg), axis=1))
+    return d
+
+
+def carry_mask(box: Box, centroids: np.ndarray, available: np.ndarray,
+               walls, ceiling_y: float, own: np.ndarray | None = None) -> np.ndarray:
+    """`box` の上に乗っていて一緒に動かすべき面を選ぶ。
+
+    `available` はまだどの家具にも属していない面のマスク。
+    `own` は既にこの箱に属している面。**層が空かどうかの判定には `own` も数える。**
+    数えないと、天板付近の層を箱が取り切っている場合に最初の層が空と判定され、
+    走査が即座に止まって何も運べない。
+    """
+    y_top = float(box.center[1] + box.half[1])
+    local = (centroids - box.center) @ box.axes
+    foot = ((np.abs(local[:, 0]) <= box.half[0] * FOOTPRINT_INFLATE) &
+            (np.abs(local[:, 2]) <= box.half[2] * FOOTPRINT_INFLATE))
+
+    cand = (available & foot
+            & (centroids[:, 1] > y_top - CARRY_LAYER * 0.4)
+            & (centroids[:, 1] < ceiling_y - CEILING_CLEARANCE)
+            & (_wall_distance(centroids, walls) >= WALL_CLEARANCE))
+    if not cand.any():
+        return np.zeros(len(centroids), bool)
+
+    height = centroids[:, 1] - y_top
+    # 箱自身の面も「その層に物がある」根拠として数える（運ぶ対象には入れない）
+    support = own & foot if own is not None else np.zeros(len(centroids), bool)
+
+    out = np.zeros(len(centroids), bool)
+    layer = 0
+    while layer * CARRY_LAYER < CARRY_MAX:
+        lo = layer * CARRY_LAYER - CARRY_LAYER * 0.4
+        hi = lo + CARRY_LAYER
+        in_layer = (height >= lo) & (height < hi)
+        sel = cand & in_layer
+        if not sel.any() and not (support & in_layer).any():
+            break                    # 空白の層。ここで接触が途切れている
+        out |= sel
+        layer += 1
+    return out

@@ -188,3 +188,103 @@ def test_splat_split_excludes_floor_and_assigns_once(room_json):
     room_mask, masks = segment.split_splats(xyz, [b], floor_y=0.0)
     assert masks[b.identifier].tolist() == [True, False, False]
     assert room_mask.tolist() == [False, True, True]
+
+
+# -- 上に乗っている物を運ぶ --------------------------------------------------
+
+
+class _Wall:
+    """`roomplan.Wall` の最小の代役。`carry_mask` は p0/p1 だけ使う。"""
+
+    def __init__(self, p0, p1):
+        self.p0 = np.array(p0, float)
+        self.p1 = np.array(p1, float)
+
+
+def _tri(x, y, z, size=0.02):
+    """指定位置に小さな三角形 1 枚を作る頂点を返す。"""
+    return [[x, y, z], [x + size, y, z], [x, y, z + size]]
+
+
+def test_carry_takes_contacting_stack_and_stops_at_a_gap():
+    """接触して積み上がる分だけ運び、空白で止める。
+
+    素朴に「天板の上の柱」を全部運ぶと、離れた壁の物まで巻き込む。
+    実測でベッドの上に天板から +1.76m まで面が残っていた。
+    """
+    b = segment.Box(
+        identifier="T", category="table",
+        center=np.array([0.0, 0.35, 0.0]), axes=np.eye(3),
+        half=np.array([0.5, 0.35, 0.4]),
+    )
+    y_top = 0.7
+    verts, faces = [], []
+
+    def add(x, y, z):
+        i = len(verts)
+        verts.extend(_tri(x, y, z))
+        faces.append([i, i + 1, i + 2])
+
+    # 天板の直上に 4 層ぶん積む（接触している荷物）
+    for n in range(4):
+        add(0.0, y_top + 0.01 + n * segment.CARRY_LAYER, 0.0)
+    # 大きく離れた高さに 1 枚（別物。運んではいけない）
+    add(0.0, y_top + 0.60, 0.0)
+
+    mesh = Mesh(vertices=np.array(verts, np.float32), faces=np.array(faces, np.int64))
+    walls = [_Wall([-3, -3], [3, -3])]        # 遠い壁
+    res = segment.split_mesh(mesh, [b], floor_y=0.0, walls=walls, ceiling_y=2.4)
+
+    assert len(res.parts["T"].faces) == 4, "接触している 4 層だけ運ぶ"
+    assert len(res.remainder.faces) == 1, "空白の先にある 1 枚は残す"
+
+
+def test_carry_does_not_take_wall_faces():
+    """壁際は運ばない。運ぶと壁が裂ける。"""
+    b = segment.Box(
+        identifier="S", category="storage",
+        center=np.array([0.0, 0.5, 0.0]), axes=np.eye(3),
+        half=np.array([0.4, 0.5, 0.3]),
+    )
+    verts, faces = [], []
+    i = len(verts)
+    # 箱の外（膨張後の上端 1.02 より上）だが、壁から 2cm（WALL_CLEARANCE 未満）
+    verts.extend(_tri(0.0, 1.06, 0.28))
+    faces.append([i, i + 1, i + 2])
+    mesh = Mesh(vertices=np.array(verts, np.float32), faces=np.array(faces, np.int64))
+    walls = [_Wall([-3.0, 0.30], [3.0, 0.30])]      # z=0.30 に壁
+    res = segment.split_mesh(mesh, [b], floor_y=0.0, walls=walls, ceiling_y=2.4)
+
+    assert "S" not in res.parts or len(res.parts["S"].faces) == 0
+    assert len(res.remainder.faces) == 1
+
+
+def test_carry_is_off_when_walls_are_not_given():
+    """壁を渡さなければ箱の中だけ。既定の挙動を変えない。"""
+    b = segment.Box(
+        identifier="T", category="table",
+        center=np.array([0.0, 0.35, 0.0]), axes=np.eye(3),
+        half=np.array([0.5, 0.35, 0.4]),
+    )
+    verts = _tri(0.0, 0.72, 0.0)
+    mesh = Mesh(vertices=np.array(verts, np.float32), faces=np.array([[0, 1, 2]], np.int64))
+    res = segment.split_mesh(mesh, [b], floor_y=0.0)
+    assert len(res.remainder.faces) == 1, "carry を渡さなければ運ばない"
+
+
+def test_carry_does_not_steal_from_another_object():
+    """隣の家具を荷物として奪わない。箱の割り当てが先。"""
+    low = segment.Box(identifier="LOW", category="table",
+                      center=np.array([0.0, 0.2, 0.0]), axes=np.eye(3),
+                      half=np.array([0.5, 0.2, 0.4]))
+    tall = segment.Box(identifier="TALL", category="storage",
+                       center=np.array([0.0, 0.7, 0.0]), axes=np.eye(3),
+                       half=np.array([0.3, 0.7, 0.2]))
+    # 低い箱の真上、かつ高い箱の中にある面
+    verts = _tri(0.0, 0.5, 0.0)
+    mesh = Mesh(vertices=np.array(verts, np.float32), faces=np.array([[0, 1, 2]], np.int64))
+    walls = [_Wall([-3, -3], [3, -3])]
+    res = segment.split_mesh(mesh, [low, tall], floor_y=0.0, walls=walls, ceiling_y=2.4)
+
+    assert len(res.parts.get("TALL", Mesh(np.zeros((0, 3)), np.zeros((0, 3), np.int64))).faces) == 1
+    assert "LOW" not in res.parts or len(res.parts["LOW"].faces) == 0

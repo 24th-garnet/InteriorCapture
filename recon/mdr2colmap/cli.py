@@ -172,7 +172,10 @@ def cmd_arrange(args: argparse.Namespace) -> int:
     mesh_path = bundle / "mesh.ply" if bundle.is_dir() else None
     if mesh_path and mesh_path.exists():
         mesh = read_ply_mesh(mesh_path)
-        res = segment.split_mesh(mesh, boxes, layout.floor_y)
+        res = segment.split_mesh(
+            mesh, boxes, layout.floor_y,
+            walls=None if args.no_carry else layout.walls,
+            ceiling_y=None if args.no_carry else layout.ceiling_y)
         print(f"メッシュ {len(mesh.faces):,} 面")
         for b in boxes:
             part = res.parts.get(b.identifier)
@@ -186,7 +189,10 @@ def cmd_arrange(args: argparse.Namespace) -> int:
         if args.parts:
             segment.write_ply_mesh(out / "part_room.ply", res.remainder)
         if moves:
-            merged = segment.arrange_mesh(mesh, boxes, layout.floor_y, moves)
+            merged = segment.arrange_mesh(
+                mesh, boxes, layout.floor_y, moves,
+                walls=None if args.no_carry else layout.walls,
+                ceiling_y=None if args.no_carry else layout.ceiling_y)
             segment.write_ply_mesh(out / "arranged.ply", merged)
             print(f"  -> {out / 'arranged.ply'}  ({len(merged.faces):,} 面)")
 
@@ -244,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
     ar.add_argument("--moves", help="平面図の編集器が書き出した JSON")
     ar.add_argument("--splat", help="splat の PLY も切り分ける（3DGS は採用外）")
     ar.add_argument("--parts", action="store_true", help="家具ごとの PLY も書き出す")
+    ar.add_argument("--no-carry", action="store_true",
+                    help="上に乗っている物を一緒に運ばない（箱の中だけ切り出す）")
     ar.set_defaults(func=cmd_arrange)
 
     args = p.parse_args(argv)
