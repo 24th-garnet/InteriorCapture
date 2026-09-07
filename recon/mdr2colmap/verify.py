@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .colmap import project
+from .coords import project
 from .mdr import Bundle, Frame
 from .pointcloud import PIXEL_CENTER_OFFSET, unproject_frame
 

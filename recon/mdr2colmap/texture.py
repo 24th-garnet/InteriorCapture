@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 
-from .colmap import arkit_c2w_to_world2cam
+from .coords import arkit_c2w_to_world2cam
 from .mdr import Bundle, Frame
 from .mesh import Mesh
 

@@ -349,8 +349,14 @@ def to_svg(layout: RoomLayout, scale: float = 110.0, margin: float = 104.0,
     H = (y1 - y0) * scale + margin * 2
 
     def px(p) -> tuple[float, float]:
-        # Z が奥に増えるので、SVG の下向き正と合わせるため反転する。
-        return margin + (float(p[0]) - x0) * scale, margin + (y1 - float(p[1])) * scale
+        """world (X, Z) を画面座標へ。
+
+        **+Z は画面下。反転してはいけない。** 真上（+Y 側）から見下ろす
+        右手系では、画面右を +X に取ると画面上は -Z になる
+        （X × (-Z) = +Y = 視点方向）。+Z を上にすると鏡像の間取り図になり、
+        3D モデルと見比べたときにドアが逆側に出る。
+        """
+        return margin + (float(p[0]) - x0) * scale, margin + (float(p[1]) - y0) * scale
 
     out = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H:.0f}" '

@@ -45,7 +45,7 @@ from PIL import Image
 from scipy.sparse import coo_matrix, vstack
 from scipy.sparse.linalg import lsqr
 
-from .colmap import arkit_c2w_to_world2cam
+from .coords import arkit_c2w_to_world2cam
 from .mdr import Bundle, Frame
 
 #: 対応付けに使う点の数。ゲインはフレームごとに 1 個なので、これで十分。

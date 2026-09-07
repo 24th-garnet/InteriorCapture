@@ -1,8 +1,14 @@
 """mdr2colmap のコマンドライン。
 
-    mdr2colmap verify  room.mdr              # 座標変換の検証（学習前に必ず通す）
-    mdr2colmap convert room.mdr -o scene     # COLMAP モデル + 初期点群を書き出す
-    msplat-train scene -n 7000 --eval        # 学習
+    mdr2colmap verify   room.mdr               # 座標変換とポーズの検証
+    mdr2colmap roomplan room.mdr -o plan/      # RoomPlan から間取り図
+    mdr2colmap floorplan room.mdr -o plan/     # メッシュから間取り図（room.json なしの旧データ用）
+    mdr2colmap arrange  room.mdr --moves m.json -o out/   # 家具を切り分けて動かす
+
+**3DGS は採用しない。** 解像度もガウシアン数も盲検で差が出ず、
+サーバ側で計算資源を増やしても品質が上がらないと実測で確認したため
+（`docs/experiments-server-quality.md`）。関連コード（COLMAP 書き出し・
+初期点群・ポーズ精密化・station 抽出・splat ビューア）は削除済み。
 """
 
 from __future__ import annotations
@@ -11,7 +17,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import colmap, floorplan, pipeline, pointcloud, roomplan, tour, verify
+from . import coords, floorplan, roomplan, segment, verify
 from .mdr import Bundle, MDRError
 from .mesh import read_ply_mesh
 
@@ -80,57 +86,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 1
 
 
-def cmd_convert(args: argparse.Namespace) -> int:
-    bundle = Bundle(args.bundle)
-    conf_min = _resolve_conf_min(bundle, args.conf_min)
-
-    out = Path(args.output)
-    sparse = out / "sparse" / "0"
-    images = out / "images"
-    sparse.mkdir(parents=True, exist_ok=True)
-    images.mkdir(parents=True, exist_ok=True)
-
-    frames = bundle.frames
-    names = [bundle.image_name(f.index) for f in frames]
-    width, height = bundle.manifest.video_wh
-
-    print(f"COLMAP モデルを書き出し中: {len(frames)} フレーム", file=sys.stderr)
-    colmap.write_cameras_bin(sparse / "cameras.bin", frames, width, height)
-    colmap.write_images_bin(sparse / "images.bin", frames, names)
-
-    # 画像は既定でシンボリックリンク。1 部屋 180MB のコピーを避ける。
-    for f, name in zip(frames, names):
-        dst = images / name
-        if dst.exists() or dst.is_symlink():
-            dst.unlink()
-        src = bundle.image_path(f.index).resolve()
-        if args.copy:
-            dst.write_bytes(src.read_bytes())
-        else:
-            dst.symlink_to(src)
-
-    print("LiDAR 深度から初期点群を構築中", file=sys.stderr)
-    xyz, rgb = pointcloud.build(
-        bundle,
-        frames,
-        conf_min=conf_min,
-        voxel=args.voxel,
-        depth_range=(args.near, args.far),
-        denoise=not args.no_denoise,
-        progress=_progress("  非投影"),
-    )
-    colmap.write_points3d_ply(sparse / "points3D.ply", xyz, rgb)
-
-    print()
-    print(f"出力先: {out}")
-    print(f"  カメラ  {len(frames)} (PINHOLE, フレームごとに 1 台)")
-    print(f"  点群    {len(xyz):,} 点 (ボクセル {args.voxel*100:.0f}cm)")
-    print()
-    print("次のコマンドで学習できます:")
-    print(f"  msplat-train {out} -n 7000 --eval")
-    return 0
-
-
 def cmd_floorplan(args: argparse.Namespace) -> int:
     bundle = Bundle(args.bundle)
     mesh_path = bundle.path / "mesh.ply"
@@ -192,99 +147,83 @@ def cmd_roomplan(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_tour(args: argparse.Namespace) -> int:
-    bundle = Bundle(args.bundle)
-    t = tour.extract(bundle, spacing=args.spacing, eye_height=args.eye_height)
+def cmd_arrange(args: argparse.Namespace) -> int:
+    """家具を切り分け、指定があれば動かした 3D を書き出す。
 
-    out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(t.to_json())
-
-    deg = [len(s.neighbors) for s in t.stations]
-    print(f"station {len(t.stations)} 個 (間隔 {args.spacing} m)")
-    print(f"  隣接数 {min(deg)}〜{max(deg)}   床 {t.floor_y:+.2f} m   視点高 {t.eye_height} m")
-    print(f"  出力: {out}")
-    return 0
-
-
-def cmd_server(args: argparse.Namespace) -> int:
-    """サーバ側パイプライン。学習解像度は 640 固定。"""
-    brush = Path(args.brush).expanduser()
-    # --no-train のときは brush を使わないので存在確認もしない。
-    # 前処理だけ回したい場合（実験用のシーン生成など）に brush の用意を強いない。
-    if not args.no_train and not brush.exists():
-        print(f"エラー: brush が見つかりません: {brush}", file=sys.stderr)
+    平面図の編集器（家具配置）が書き出す JSON を `--moves` に渡す。
+    `--moves` なしなら切り分けの内訳だけを報告する。
+    """
+    bundle = Path(args.bundle)
+    room = bundle / "room.json" if bundle.is_dir() else bundle
+    if not room.exists():
+        print(f"エラー: room.json がありません: {room}", file=sys.stderr)
         return 2
 
-    if args.no_train:
-        print("前処理のみ（--no-train）")
-    else:
-        print(f"学習解像度 {pipeline.TRAIN_RESOLUTION} / ガウシアン {args.max_splats:,} / "
-              f"{args.iterations:,} iteration")
-    if args.no_train:
-        result = pipeline.run(args.bundle, args.output, refine_poses=not args.no_refine,
-                              correct_exposure=not args.no_exposure)
-    else:
-        result = pipeline.run_all(
-            args.bundle, args.output, brush,
-            correct_exposure=not args.no_exposure,
-            refine_poses=not args.no_refine,
-        )
+    layout = roomplan.load(room)
+    boxes = segment.boxes_from_room(room)
+    if not boxes:
+        print("家具が検出されていません。切り分ける対象がありません。", file=sys.stderr)
+        return 1
 
-    print()
-    print(f"{'段階':<16}{'秒':>8}  内容")
-    for st in result.stages:
-        print(f"{st.name:<16}{st.seconds:>8.1f}  {st.detail}")
-    print(f"{'合計':<16}{result.total:>8.1f}")
-    print()
-    print(f"シーン    {result.scene_dir}")
-    print(f"ツアー    {result.tour_path}")
-    if result.splat_path:
-        print(f"splat     {result.splat_path}  "
-              f"({result.splat_path.stat().st_size / 1e6:.0f} MB)")
-        print()
-        print("閲覧:")
-        print(f"  open -n -a MadoribaTour.app --args {result.tour_path} {result.splat_path}")
-    return 0 if (args.no_train or result.splat_path) else 1
+    moves = segment.load_moves(args.moves) if args.moves else []
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+
+    mesh_path = bundle / "mesh.ply" if bundle.is_dir() else None
+    if mesh_path and mesh_path.exists():
+        mesh = read_ply_mesh(mesh_path)
+        res = segment.split_mesh(mesh, boxes, layout.floor_y)
+        print(f"メッシュ {len(mesh.faces):,} 面")
+        for b in boxes:
+            part = res.parts.get(b.identifier)
+            n = len(part.faces) if part else 0
+            label = roomplan.FURNITURE_JA.get(b.category, b.category)
+            print(f"  {label:<8}{n:>9,} 面")
+            if part is not None and n and args.parts:
+                segment.write_ply_mesh(out / f"part_{b.category}.ply", part)
+        print(f"  {'部屋':<8}{len(res.remainder.faces):>9,} 面"
+              f"   床付近で除外 {res.floor_excluded:,}")
+        if args.parts:
+            segment.write_ply_mesh(out / "part_room.ply", res.remainder)
+        if moves:
+            merged = segment.arrange_mesh(mesh, boxes, layout.floor_y, moves)
+            segment.write_ply_mesh(out / "arranged.ply", merged)
+            print(f"  -> {out / 'arranged.ply'}  ({len(merged.faces):,} 面)")
+
+    if args.splat:
+        cloud = segment.read_splat_ply(args.splat)
+        room_mask, masks = segment.split_splats(cloud.xyz, boxes, layout.floor_y)
+        print(f"\nsplat {len(cloud):,} ガウシアン")
+        for b in boxes:
+            label = roomplan.FURNITURE_JA.get(b.category, b.category)
+            print(f"  {label:<8}{int(masks[b.identifier].sum()):>9,}")
+        print(f"  {'部屋':<8}{int(room_mask.sum()):>9,}")
+        if moves:
+            moved = segment.arrange_splats(cloud, boxes, layout.floor_y, moves)
+            segment.write_splat_ply(out / "arranged_splat.ply", moved)
+            print(f"  -> {out / 'arranged_splat.ply'}")
+
+    if not moves:
+        print("\n--moves に編集器の JSON を渡すと、動かした 3D を書き出します。")
+    return 0
+
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="mdr2colmap",
-        description="MDR バンドルを COLMAP モデル + LiDAR 初期点群に変換する",
+        description="MDR バンドルから間取り図と家具配置を作る",
     )
     sub = p.add_subparsers(dest="command", required=True)
 
-    def add_common(sp):
-        sp.add_argument("bundle", help=".mdr ディレクトリ")
-        sp.add_argument(
-            "--conf-min",
-            type=int,
-            default=None,
-            help="採用する深度信頼度の下限。既定は実データの最大値（= high）",
-        )
-
-    v = sub.add_parser("verify", help="座標変換を検証する（学習前に必ず実行）")
-    add_common(v)
+    v = sub.add_parser("verify", help="座標変換とポーズを検証する")
+    v.add_argument("bundle", help=".mdr ディレクトリ")
+    v.add_argument("--conf-min", type=int, default=None,
+                   help="採用する深度信頼度の下限。既定は実データの最大値（= high）")
     v.add_argument("--pairs", type=int, default=5, help="検証するフレームペア数")
     v.add_argument("--stride", type=int, default=10, help="ペアのフレーム間隔")
     v.add_argument("--overlay", default=None, help="重ね合わせ PNG の出力先ディレクトリ")
     v.set_defaults(func=cmd_verify)
-
-    c = sub.add_parser("convert", help="COLMAP モデルと初期点群を書き出す")
-    add_common(c)
-    c.add_argument("-o", "--output", required=True, help="出力ディレクトリ")
-    c.add_argument("--voxel", type=float, default=0.02, help="ボクセルサイズ(m)")
-    c.add_argument("--near", type=float, default=0.1, help="採用する深度の下限(m)")
-    c.add_argument("--far", type=float, default=5.0, help="採用する深度の上限(m)")
-    c.add_argument("--no-denoise", action="store_true", help="外れ値除去を行わない")
-    c.add_argument("--copy", action="store_true", help="画像をリンクせずコピーする")
-    c.set_defaults(func=cmd_convert)
-
-    fp = sub.add_parser("floorplan", help="メッシュから間取り（壁線・寸法）を抽出する")
-    fp.add_argument("bundle", help=".mdr ディレクトリ")
-    fp.add_argument("-o", "--output", default=".", help="SVG/DXF の出力先")
-    fp.set_defaults(func=cmd_floorplan)
 
     rp = sub.add_parser("roomplan", help="RoomPlan の room.json から間取り図を作る")
     rp.add_argument("bundle", help="MDR バンドル、または room.json")
@@ -292,26 +231,20 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--no-furniture", action="store_true", help="家具を描かない")
     rp.set_defaults(func=cmd_roomplan)
 
-    tr = sub.add_parser("tour", help="撮影軌跡から station point を抽出する")
-    tr.add_argument("bundle", help=".mdr ディレクトリ")
-    tr.add_argument("-o", "--output", default="tour.json", help="出力先 JSON")
-    tr.add_argument("--spacing", type=float, default=1.0, help="station の間隔(m)")
-    tr.add_argument("--eye-height", type=float, default=1.5, help="視点の高さ(m)")
-    tr.set_defaults(func=cmd_tour)
+    # room.json を持たない旧データ用。寸法は 3cm 以内で一致するが
+    # 開口部（ドア・窓）は検出できない（閉まっていると壁と区別がつかない）。
+    fp = sub.add_parser("floorplan", help="メッシュから間取りを抽出する（旧データ用）")
+    fp.add_argument("bundle", help=".mdr ディレクトリ")
+    fp.add_argument("-o", "--output", default=".", help="SVG/DXF の出力先")
+    fp.set_defaults(func=cmd_floorplan)
 
-    sv = sub.add_parser("server", help="サーバ側パイプライン（前処理 + 3DGS、解像度 640 固定）")
-    sv.add_argument("bundle", help=".mdr ディレクトリ")
-    sv.add_argument("-o", "--output", required=True, help="出力ディレクトリ")
-    sv.add_argument("--brush", default="../vendor/brush/target/release/brush",
-                    help="Brush の実行ファイル")
-    sv.add_argument("--max-splats", type=int, default=pipeline.MAX_SPLATS,
-                    help="ガウシアン数の上限。25 万でも目視で区別できず 81 秒速い")
-    sv.add_argument("--iterations", type=int, default=pipeline.TRAIN_ITERS)
-    sv.add_argument("--no-refine", action="store_true", help="ポーズ精密化を行わない")
-    sv.add_argument("--no-exposure", action="store_true",
-                    help="露出補正を行わない（画像はシンボリックリンクになる）")
-    sv.add_argument("--no-train", action="store_true", help="前処理のみ（3DGS を回さない）")
-    sv.set_defaults(func=cmd_server)
+    ar = sub.add_parser("arrange", help="RoomPlan の箱で家具を切り分け、動かす")
+    ar.add_argument("bundle", help="MDR バンドル（room.json と mesh.ply を含む）")
+    ar.add_argument("-o", "--output", default="arranged", help="出力先")
+    ar.add_argument("--moves", help="平面図の編集器が書き出した JSON")
+    ar.add_argument("--splat", help="splat の PLY も切り分ける（3DGS は採用外）")
+    ar.add_argument("--parts", action="store_true", help="家具ごとの PLY も書き出す")
+    ar.set_defaults(func=cmd_arrange)
 
     args = p.parse_args(argv)
     try:

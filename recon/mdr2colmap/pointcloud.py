@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-from .colmap import arkit_c2w_to_opencv_c2w
+from .coords import arkit_c2w_to_opencv_c2w
 from .mdr import Bundle, Frame
 
 #: 連続画素座標は「配列インデックス + 0.5」で扱う（COLMAP と同じ規約）。
