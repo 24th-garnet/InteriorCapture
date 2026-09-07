@@ -28,6 +28,7 @@ struct CaptureView: View {
     @StateObject private var capture = CaptureSession()
     @State private var showProbe = false
     @State private var showPlan = false
+    @State private var showLibrary = false
     /// RoomPlan と同居できるかの実測。撮影経路を作り直す前に潰しておく。
     @StateObject private var coexist = CoexistProbeBox()
 
@@ -44,6 +45,9 @@ struct CaptureView: View {
         }
         .sheet(isPresented: $showProbe) {
             probeSheet
+        }
+        .sheet(isPresented: $showLibrary) {
+            ScanListView()
         }
         .sheet(isPresented: $showPlan) {
             if #available(iOS 17.0, *), let room = capture.capturedRoom {
@@ -89,6 +93,14 @@ struct CaptureView: View {
                 label("棄却", capture.lastRejection).foregroundStyle(.secondary)
             }
             Spacer()
+            Button {
+                showLibrary = true
+            } label: {
+                Label("過去のスキャン", systemImage: "square.stack.3d.up")
+                    .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
             Button {
                 showProbe = true
             } label: {
