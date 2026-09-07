@@ -337,3 +337,61 @@ def test_veto_is_off_without_walls():
     mesh = Mesh(vertices=np.array(verts, np.float32), faces=np.array([[0, 1, 2]], np.int64))
     res = segment.split_mesh(mesh, [b], floor_y=0.0)
     assert len(res.parts["S"].faces) == 1
+
+
+# -- 箱が重なるとき ----------------------------------------------------------
+
+
+def test_overlapping_boxes_prefer_the_smaller_one():
+    """入れ子の箱では、小さい箱が勝つ。
+
+    机の下の椅子で実際に起きた。椅子の箱の 56% が机の箱と重なっており、
+    「先に来た箱が勝つ」だと椅子は自分の箱の 51% しか得られなかった。
+
+    箱の大きさで正規化した深さ（|local|/half）ではこれは解けない。同じ絶対
+    距離なら大きい箱のほうが浅いので、**大きい箱が選ばれてしまう**。
+    """
+    big = segment.Box("BIG", "table", np.zeros(3), np.eye(3), np.array([1.0, 1.0, 1.0]))
+    small = segment.Box("SML", "chair", np.zeros(3), np.eye(3), np.array([0.2, 1.0, 0.2]))
+    # 小さい箱のほぼ中心。大きい箱では中心からの相対位置が浅い
+    verts = _tri(0.02, 0.5, 0.02)
+    mesh = Mesh(vertices=np.array(verts, np.float32), faces=np.array([[0, 1, 2]], np.int64))
+
+    for boxes in ([big, small], [small, big]):        # 並びを変えても同じ結果
+        res = segment.split_mesh(mesh, boxes, floor_y=-1.0)
+        assert len(res.parts.get("SML", Mesh(np.zeros((0, 3)), np.zeros((0, 3), np.int64))).faces) == 1, \
+            "小さい箱に深く入っている面は小さい箱へ"
+        assert "BIG" not in res.parts or len(res.parts["BIG"].faces) == 0
+
+
+def test_face_outside_the_small_box_goes_to_the_big_one():
+    big = segment.Box("BIG", "table", np.zeros(3), np.eye(3), np.array([1.0, 1.0, 1.0]))
+    small = segment.Box("SML", "chair", np.zeros(3), np.eye(3), np.array([0.2, 1.0, 0.2]))
+    verts = _tri(0.8, 0.5, 0.0)                      # 小さい箱の外、大きい箱の中
+    mesh = Mesh(vertices=np.array(verts, np.float32), faces=np.array([[0, 1, 2]], np.int64))
+    res = segment.split_mesh(mesh, [big, small], floor_y=-1.0)
+    assert len(res.parts["BIG"].faces) == 1
+    assert "SML" not in res.parts or len(res.parts["SML"].faces) == 0
+
+
+def test_top_surface_stays_with_its_own_box():
+    """小さい箱が重なっていても、大きい箱の天板は大きい箱に残る。
+
+    実測（room-33d49373）では机と椅子の重なり 1,264 面のうち 516 面が
+    机の天板の高さ（床上 70〜80cm、箱の上端 -0.877）にあった。
+    「小さい箱が勝つ」だけだと椅子が天板を奪い、机に穴が空く。
+    天板は「箱の上端付近にある水平な面」で見分ける。
+    """
+    table = segment.Box("TBL", "table", np.zeros(3), np.eye(3), np.array([1.0, 0.4, 1.0]))
+    chair = segment.Box("CHR", "chair", np.zeros(3), np.eye(3), np.array([0.2, 0.9, 0.2]))
+    # 机の箱の上端 (y=0.4) にある水平な面。椅子の箱にも入っている
+    top = [[-0.1, 0.4, -0.1], [0.1, 0.4, -0.1], [0.0, 0.4, 0.1]]
+    # 机の天板より下、椅子の箱の中の面（座面）
+    seat = _tri(0.0, 0.0, 0.0)
+    mesh = Mesh(vertices=np.array(top + seat, np.float32),
+                faces=np.array([[0, 1, 2], [3, 4, 5]], np.int64))
+
+    for boxes in ([table, chair], [chair, table]):
+        res = segment.split_mesh(mesh, boxes, floor_y=-1.0)
+        assert len(res.parts["TBL"].faces) == 1, "天板は机に残る"
+        assert len(res.parts["CHR"].faces) == 1, "座面は椅子へ"

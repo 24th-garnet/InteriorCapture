@@ -119,7 +119,8 @@ def environment_mask(centroids: np.ndarray, floor_y: float, ceiling_y: float,
 
 def assign_faces(centroids: np.ndarray, boxes: list[Box], floor_y: float,
                  floor_margin: float = FLOOR_MARGIN,
-                 walls=None, ceiling_y: float | None = None) -> np.ndarray:
+                 walls=None, ceiling_y: float | None = None,
+                 normals: np.ndarray | None = None) -> np.ndarray:
     """面（の重心）を家具に振り分ける。戻り値は箱の添字、-1 は部屋。
 
     `walls` と `ceiling_y` を渡すと:
@@ -134,10 +135,40 @@ def assign_faces(centroids: np.ndarray, boxes: list[Box], floor_y: float,
     else:
         env = near_floor
 
-    assigned = np.full(len(centroids), -1, dtype=np.int32)
-    for i, b in enumerate(boxes):
-        inside = b.contains(centroids) & ~env & (assigned < 0)
-        assigned[inside] = i
+    # **箱が重なるときは「小さい箱を優先」する。ただし天板は守る。**
+    #
+    # 「先に来た箱が勝つ」だと room.json の並びで結果が変わる。実測で
+    # 椅子の箱の 56% が机の箱と重なっており（机は 21%）、机が先に来るため
+    # 椅子は自分の箱の 51% しか得られなかった。
+    #
+    # 正規化した深さ（|local|/half）は使えない。同じ絶対距離なら大きい箱の
+    # ほうが相対的に浅くなるので、**大きい箱を選んでしまう**（入れ子に対して逆）。
+    #
+    # 小さい箱を優先するのが素直だが、それだけでは机の天板を椅子が奪う。
+    # 重なり領域の高さ分布（実測）:
+    #
+    #      0- 10cm  206 面   両者の脚
+    #     40- 70cm  536 面   椅子の座面と背もたれ
+    #     70- 80cm  516 面   机の天板（77.7cm）
+    #
+    # 天板は「箱の上端付近にある水平な面」という物理的な手がかりで守れる。
+    volume = np.array([float(np.prod(b.half)) for b in boxes])
+    contain = np.stack([b.contains(centroids) for b in boxes], axis=1)
+
+    # 小さい箱を優先。含まない箱は +inf。
+    cost = np.where(contain, volume[None, :], np.inf)
+
+    if normals is not None:
+        # 箱の上端 TOP_TOL 以内にある水平な面は、その箱の天板とみなして守る。
+        horiz = np.abs(normals[:, 1]) > TOP_NORMAL
+        for i, b in enumerate(boxes):
+            top = float(b.center[1] + b.half[1])
+            near_top = np.abs(centroids[:, 1] - top) < TOP_TOL
+            cost[contain[:, i] & near_top & horiz, i] = -1.0
+
+    best = np.argmin(cost, axis=1)
+    has = np.isfinite(cost).any(axis=1)
+    assigned = np.where(has & ~env, best.astype(np.int32), -1).astype(np.int32)
 
     if walls is not None and ceiling_y is not None:
         # 箱の割り当てが終わってから運ぶ。先に運ぶと、隣の家具を
@@ -158,9 +189,13 @@ def split_mesh(mesh: Mesh, boxes: list[Box], floor_y: float,
     部品にまたがり、どちらに入れるかが決まらない。
     """
     V, F = mesh.vertices, mesh.faces
-    centroids = V[F].mean(axis=1)
+    tri = V[F]
+    centroids = tri.mean(axis=1)
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
     near_floor = centroids[:, 1] < floor_y + floor_margin
-    assigned = assign_faces(centroids, boxes, floor_y, floor_margin, walls, ceiling_y)
+    assigned = assign_faces(centroids, boxes, floor_y, floor_margin, walls, ceiling_y,
+                            normals=normals)
 
     parts: dict[str, Mesh] = {}
     counts: dict[str, int] = {}
@@ -448,8 +483,12 @@ def split_textured(tm, boxes: list[Box], floor_y: float,
     戻り値は `(remainder, {id: part})`。各要素は `(vertices, uvs, faces)`。
     """
     V, F, UV = tm.vertices, tm.faces, tm.uvs
-    centroids = V[F].mean(axis=1)
-    assigned = assign_faces(centroids, boxes, floor_y, floor_margin, walls, ceiling_y)
+    tri = V[F]
+    centroids = tri.mean(axis=1)
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
+    assigned = assign_faces(centroids, boxes, floor_y, floor_margin, walls, ceiling_y,
+                            normals=normals)
 
     def take(mask: np.ndarray):
         faces = F[mask]
@@ -607,6 +646,10 @@ WALL_CLEARANCE = 0.10
 WALL_BAND = 0.04
 #: 天井帯。天井付近の面も家具に含めない。
 CEILING_BAND = 0.10
+#: 箱の上端からこの距離以内にある水平な面を「天板」とみなす。
+TOP_TOL = 0.05
+#: 天板と認める法線の垂直成分。
+TOP_NORMAL = 0.70
 #: 天井付近も運ばない。
 CEILING_CLEARANCE = 0.15
 #: 天板の外形をこの倍率で広げて判定する。縁に載った物を拾うため。
