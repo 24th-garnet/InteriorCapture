@@ -136,8 +136,13 @@ def cmd_roomplan(args: argparse.Namespace) -> int:
         print("RoomPlan を含む撮影が必要です（iOS 17 以降のビルド）。", file=sys.stderr)
         return 2
 
-    layout = roomplan.load(path)
+    fixes = roomplan.load_opening_fixes(args.fixes) if args.fixes else None
+    layout = roomplan.load(path, opening_fixes=fixes)
     print(roomplan.summary(layout))
+    medium = [o for w in layout.walls for o in w.openings if o.confidence == "medium"]
+    if medium:
+        print(f"※ 開口 {len(medium)} 件が confidence medium です。"
+              f"種別の誤りは幾何では見分けられないので、実写で確認してください")
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -237,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("bundle", help="MDR バンドル、または room.json")
     rp.add_argument("-o", "--output", default="plan", help="出力先ディレクトリ")
     rp.add_argument("--no-furniture", action="store_true", help="家具を描かない")
+    rp.add_argument("--fixes", help="人手の訂正 JSON（openings = 開口の種別）")
     rp.set_defaults(func=cmd_roomplan)
 
     # room.json を持たない旧データ用。寸法は 3cm 以内で一致するが

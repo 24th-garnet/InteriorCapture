@@ -87,8 +87,19 @@ DISCLAIMERS = (
 
 @dataclass
 class Opening:
-    """壁に空いた穴。ドア・窓・単なる開口。"""
+    """壁に空いた穴。ドア・窓・単なる開口。
 
+    **種別の判定は RoomPlan が行う。** こちらは `doors` / `windows` /
+    `openings` の配列をそのまま読むだけで、独自の判定はしない。
+
+    RoomPlan は間違える。実測（room-33d49373）で、幅 1736mm の掃き出し窓が
+    `doors` に入っていた（confidence medium）。カーテンの面を建具として
+    捉えたためで、下端 0mm も窓と矛盾しないので幾何では見分けられない。
+    販売図面では窓を両開き扉として描くことになり、誤認を生む。
+    人が直した結果を `opening_fixes` で受け取る。
+    """
+
+    identifier: str
     category: str
     #: 親の壁に沿った位置（メートル）。壁の始点からの距離。
     start: float
@@ -327,8 +338,19 @@ def _segment(surface: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return c2 - d * half, c2 + d * half, center
 
 
-def load(path: str | Path) -> RoomLayout:
-    """`room.json` を読む。"""
+def load_opening_fixes(path: str | Path) -> dict[str, str]:
+    """開口の種別の訂正を読む。`{識別子: "window" | "door" | "opening"}`。"""
+    data = json.loads(Path(path).read_text())
+    return {str(k): str(v) for k, v in data.get("openings", data).items()}
+
+
+def load(path: str | Path,
+         opening_fixes: dict[str, str] | None = None) -> RoomLayout:
+    """`room.json` を読む。
+
+    `opening_fixes` は開口の種別の訂正（`{識別子: 種別}`）。RoomPlan の
+    分類は誤ることがあり、幾何からは見分けられない（`Opening` を参照）。
+    """
     data = json.loads(Path(path).read_text())
 
     walls: list[Wall] = []
@@ -365,8 +387,12 @@ def load(path: str | Path) -> RoomLayout:
             t1 = _project(parent, p1)
             lo, hi = sorted((t0, t1))
             h = float(s["dimensions"][1])
+            ident = str(s.get("identifier", ""))
+            cat = _category(s.get("category")) if key != "openings" else "opening"
+            cat = (opening_fixes or {}).get(ident, cat)
             parent.openings.append(Opening(
-                category=_category(s.get("category")) if key != "openings" else "opening",
+                identifier=ident,
+                category=cat,
                 start=lo, end=hi,
                 height=h,
                 sill=float(center[1]) - h / 2 - floor_y,

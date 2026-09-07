@@ -345,3 +345,41 @@ def test_bounding_box_is_the_last_resort(tmp_path):
     assert layout.area_source == "外接矩形"
     assert layout.area == pytest.approx(12.0, abs=0.05)
     assert "外接矩形" in roomplan.summary(layout)
+
+
+def test_opening_category_can_be_corrected(square_room):
+    """開口の種別は人手で訂正できる。
+
+    RoomPlan は分類を誤る。実測（room-33d49373）で幅 1736mm の掃き出し窓が
+    `doors` に入っていた（confidence medium、下端 0mm）。下端は窓と矛盾せず、
+    幅も両開き扉としてあり得るので**幾何では見分けられない**。訂正しないと
+    販売図面に窓を両開き扉として描くことになり、誤認を生む。
+    """
+    layout = roomplan.load(square_room)
+    door = layout.walls[0].openings[0] if layout.walls[0].openings else None
+    door = next(o for w in layout.walls for o in w.openings)
+    assert door.category == "door"
+    assert door.identifier == "D-1"
+
+    fixed = roomplan.load(square_room, opening_fixes={"D-1": "window"})
+    got = next(o for w in fixed.walls for o in w.openings)
+    assert got.category == "window"
+    assert len(fixed.openings("window")) == 1
+    assert len(fixed.openings("door")) == 0
+    # 窓は二重線で描かれ、開き弧は出ない
+    svg = roomplan.to_svg(fixed)
+    assert "stroke-dasharray" not in svg, "窓に開き弧を描いてはいけない"
+    # 幅・位置・下端は RoomPlan の値のまま
+    assert got.width == pytest.approx(door.width)
+    assert got.start == pytest.approx(door.start)
+    assert got.sill == pytest.approx(door.sill)
+
+
+def test_opening_fixes_file_is_read(tmp_path):
+    """訂正ファイルは openings キーを読む。箱の訂正と同じファイルに置ける。"""
+    p = tmp_path / "fixes.json"
+    p.write_text(json.dumps({
+        "boxes": {"X": {"dz": -0.35}},
+        "openings": {"D-1": "window", "D-2": "opening"},
+    }))
+    assert roomplan.load_opening_fixes(p) == {"D-1": "window", "D-2": "opening"}
