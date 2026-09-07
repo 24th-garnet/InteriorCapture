@@ -288,3 +288,94 @@ def test_carry_does_not_steal_from_another_object():
 
     assert len(res.parts.get("TALL", Mesh(np.zeros((0, 3)), np.zeros((0, 3), np.int64))).faces) == 1
     assert "LOW" not in res.parts or len(res.parts["LOW"].faces) == 0
+
+
+# -- 箱の境界で厳密に切る ----------------------------------------------------
+
+
+class _Tex:
+    """`split_textured_cut` が要求する最小の形。"""
+
+    def __init__(self, vertices, faces, uvs):
+        self.vertices = np.asarray(vertices, np.float32)
+        self.faces = np.asarray(faces, np.int64)
+        self.uvs = np.asarray(uvs, np.float32)
+
+
+def _area(tris):
+    return float(np.linalg.norm(
+        np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]), axis=1).sum() / 2)
+
+
+def test_cut_conserves_area():
+    """切っても面積は変わらない。内側 + 外側 = 元。
+
+    これが崩れると面が消えるか二重に数えている。目視では気づけない。
+    """
+    b = segment.Box("B", "table", np.array([0.0, 0.5, 0.0]), np.eye(3),
+                    np.array([0.5, 0.5, 0.5]))
+    # 箱の境界をまたぐ大きな三角形
+    verts = np.array([[-2.0, 0.5, 0.0], [2.0, 0.5, 0.0], [0.0, 0.5, 2.0]])
+    tex = _Tex(verts, [[0, 1, 2]], [[0, 0], [1, 0], [0, 1]])
+    rem, parts = segment.split_textured_cut(tex, [b], floor_y=0.0, ceiling_y=2.4)
+
+    a0 = _area(verts[np.array([[0, 1, 2]])])
+    a1 = _area(rem[0][rem[2]]) + sum(_area(p[0][p[2]]) for p in parts.values())
+    assert a1 == pytest.approx(a0, rel=1e-9), "面積が保存されていない"
+
+
+def test_cut_leaves_nothing_outside_the_box():
+    """切り出した部品は箱の外に出ない。これが切断の目的。"""
+    b = segment.Box("B", "table", np.array([0.0, 0.5, 0.0]), np.eye(3),
+                    np.array([0.5, 0.5, 0.5]))
+    verts = np.array([[-2.0, 0.5, 0.0], [2.0, 0.5, 0.0], [0.0, 0.5, 2.0]])
+    tex = _Tex(verts, [[0, 1, 2]], [[0, 0], [1, 0], [0, 1]])
+    _, parts = segment.split_textured_cut(tex, [b], floor_y=0.0, ceiling_y=2.4)
+
+    p = parts["B"]
+    local = (p[0] - b.center) @ b.axes
+    assert np.all(np.abs(local[:, 0]) <= b.half[0] + 1e-4)
+    assert np.all(np.abs(local[:, 2]) <= b.half[2] + 1e-4)
+
+
+def test_cut_interpolates_uv_at_new_vertices():
+    """切断で生まれた頂点の UV が線形補間されている。
+
+    補間を忘れると、切り口がアトラスの無関係な場所を参照して
+    「パッチワーク」になる。この案件で一度やった種類の失敗。
+    """
+    b = segment.Box("B", "table", np.array([0.0, 0.5, 0.0]), np.eye(3),
+                    np.array([0.5, 0.5, 2.0]))
+    # x = -1 から +1 へ伸びる三角形。箱は |x| <= 0.5 で切る。
+    verts = np.array([[-1.0, 0.5, 0.0], [1.0, 0.5, 0.0], [0.0, 0.5, 1.0]])
+    uvs = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]])
+    tex = _Tex(verts, [[0, 1, 2]], uvs)
+    _, parts = segment.split_textured_cut(tex, [b], floor_y=0.0, ceiling_y=2.4)
+
+    p = parts["B"]
+    # x = ±0.5 の位置で u は 0.25 / 0.75 になるべき（x=-1 で u=0、x=1 で u=1）
+    for xv, expect in ((-0.5, 0.25), (0.5, 0.75)):
+        hit = np.abs(p[0][:, 0] - xv) < 1e-4
+        if hit.any():
+            assert p[1][hit, 0] == pytest.approx(expect, abs=2e-3)
+
+
+def test_cut_keeps_carried_cargo_above_the_box():
+    """運搬の上端まで切り出す。箱の上端で切ると荷物が落ちる。"""
+    b = segment.Box("T", "table", np.array([0.0, 0.35, 0.0]), np.eye(3),
+                    np.array([0.5, 0.35, 0.4]))
+    walls = [_Wall([-3, -3], [3, -3])]
+    verts, faces, uvs = [], [], []
+
+    def add(y):
+        i = len(verts)
+        verts.extend([[0.0, y, 0.0], [0.1, y, 0.0], [0.0, y, 0.1]])
+        uvs.extend([[0, 0], [1, 0], [0, 1]])
+        faces.append([i, i + 1, i + 2])
+
+    add(0.5)                       # 箱の中
+    add(0.72)                      # 天板(0.7)の直上 = 荷物
+    tex = _Tex(verts, faces, uvs)
+    _, parts = segment.split_textured_cut(tex, [b], floor_y=0.0, ceiling_y=2.4,
+                                          walls=walls)
+    assert parts["T"][0][:, 1].max() > 0.71, "荷物が切り落とされている"
