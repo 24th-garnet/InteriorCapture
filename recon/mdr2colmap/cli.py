@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import colmap, floorplan, pipeline, pointcloud, tour, verify
+from . import colmap, floorplan, pipeline, pointcloud, roomplan, tour, verify
 from .mdr import Bundle, MDRError
 from .mesh import read_ply_mesh
 
@@ -167,6 +167,31 @@ def cmd_floorplan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_roomplan(args: argparse.Namespace) -> int:
+    """RoomPlan の room.json から間取り図を作る。
+
+    メッシュからの推定（`floorplan`）と違い、壁・ドア・窓が型付きで入っている。
+    MDR と同じ ARSession で撮っているので座標系はメッシュ・station と一致する。
+    """
+    path = Path(args.bundle)
+    if path.is_dir():
+        path = path / "room.json"
+    if not path.exists():
+        print(f"エラー: room.json がありません: {path}", file=sys.stderr)
+        print("RoomPlan を含む撮影が必要です（iOS 17 以降のビルド）。", file=sys.stderr)
+        return 2
+
+    layout = roomplan.load(path)
+    print(roomplan.summary(layout))
+
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "plan.svg").write_text(roomplan.to_svg(layout, show_furniture=not args.no_furniture))
+    (out / "plan.dxf").write_text(roomplan.to_dxf(layout))
+    print(f"\n出力: {out}/plan.svg, {out}/plan.dxf")
+    return 0
+
+
 def cmd_tour(args: argparse.Namespace) -> int:
     bundle = Bundle(args.bundle)
     t = tour.extract(bundle, spacing=args.spacing, eye_height=args.eye_height)
@@ -260,6 +285,12 @@ def main(argv: list[str] | None = None) -> int:
     fp.add_argument("bundle", help=".mdr ディレクトリ")
     fp.add_argument("-o", "--output", default=".", help="SVG/DXF の出力先")
     fp.set_defaults(func=cmd_floorplan)
+
+    rp = sub.add_parser("roomplan", help="RoomPlan の room.json から間取り図を作る")
+    rp.add_argument("bundle", help="MDR バンドル、または room.json")
+    rp.add_argument("-o", "--output", default="plan", help="出力先ディレクトリ")
+    rp.add_argument("--no-furniture", action="store_true", help="家具を描かない")
+    rp.set_defaults(func=cmd_roomplan)
 
     tr = sub.add_parser("tour", help="撮影軌跡から station point を抽出する")
     tr.add_argument("bundle", help=".mdr ディレクトリ")

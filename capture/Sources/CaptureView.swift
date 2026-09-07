@@ -66,6 +66,9 @@ struct CaptureView: View {
             if capture.thermal != .nominal {
                 label("温度", thermalText).foregroundStyle(.orange)
             }
+            if capture.roomWalls > 0 {
+                label("壁", "\(capture.roomWalls)")
+            }
             if !capture.lastRejection.isEmpty {
                 label("棄却", capture.lastRejection).foregroundStyle(.secondary)
             }

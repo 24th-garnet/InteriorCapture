@@ -36,6 +36,9 @@ final class CaptureSession: NSObject, ObservableObject {
     /// オンデバイス焼き込みの進捗（0..1）。nil なら実行していない。
     @Published private(set) var bakeProgress: Double?
     @Published private(set) var bakeSummary: String?
+    /// RoomPlan が検出した壁・物体の数。撮影中の手応えとして出す。
+    @Published private(set) var roomWalls = 0
+    @Published private(set) var roomObjects = 0
 
     /// A12Z の発熱で長時間の撮影は品質が落ちる。Scaniverse の docs 上限 5 分より保守的に切る。
     /// 公式サポートも「1〜3 分がベスト、それ以上は品質が落ちる」としている。
@@ -61,6 +64,16 @@ final class CaptureSession: NSObject, ObservableObject {
     private let encoder = ImageEncoder()
     private var frameStore: FrameStore?
     private var baker: OnDeviceBaker?
+
+    /// MDR と同じ ARSession の上で回す RoomPlan。詳細は `RoomScan`。
+    ///
+    /// **撮影開始前から回す。** RoomPlan は起動時に共有セッションから
+    /// `.sceneDepth` を落とすため、戻すまでの約 1.5 秒は深度が来ない。
+    /// 録画ボタンを押す前に済ませておけば、記録されるフレームは全て深度付きになる。
+    private var roomScan: AnyObject?
+
+    @available(iOS 17.0, *)
+    private var typedRoomScan: RoomScan? { roomScan as? RoomScan }
 
     // MARK: - セットアップ
 
@@ -88,6 +101,22 @@ final class CaptureSession: NSObject, ObservableObject {
         session.delegate = self
         session.delegateQueue = queue
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
+
+        // 同一セッションで RoomPlan も回す。座標系が一致するので、
+        // 間取り図と 3D モデルを重ねるための位置合わせが要らなくなる。
+        if #available(iOS 17.0, *) {
+            let scan = RoomScan()
+            roomScan = scan
+            scan.start(on: session)
+            // 撮影中の手応え表示のため、検出数を定期的に拾う。
+            Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] t in
+                guard let self, let scan = self.typedRoomScan, scan.isRunning else {
+                    t.invalidate(); return
+                }
+                self.roomWalls = scan.wallCount
+                self.roomObjects = scan.objectCount
+            }
+        }
     }
 
     private func makeConfiguration(_ report: DeviceProbe.Report) -> ARWorldTrackingConfiguration {
@@ -152,6 +181,19 @@ final class CaptureSession: NSObject, ObservableObject {
                 try? writer.writeMesh(anchors: anchors)
                 try writer.finish(probe: report, format: format, gravity: SIMD3<Float>(0, -1, 0))
                 let url = writer.bundleURL
+
+                // RoomPlan の確定処理。焼き込みより先に投げて並行させる。
+                // 焼き込みは 97% が UV 展開の CPU 処理、RoomBuilder は ML なので
+                // 資源が競合しにくく、待ち時間の大半が隠れる。
+                if #available(iOS 17.0, *), let scan = self.typedRoomScan {
+                    Task { @MainActor in
+                        if let room = await scan.finish() {
+                            scan.write(room, to: url)
+                            self.roomWalls = room.walls.count
+                            self.roomObjects = room.objects.count
+                        }
+                    }
+                }
 
                 // Tier 1: テクスチャ付きメッシュを iPad 上で生成する。
                 // 3DGS は Mac 側に残す（A12Z では非現実的で、Scaniverse 自身も
