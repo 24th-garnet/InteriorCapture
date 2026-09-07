@@ -27,7 +27,7 @@ def _column_major(rows):
     return np.array(rows, float).T.reshape(-1).tolist()
 
 
-def _object(ident, center, dims, yaw_deg=0.0, category="table"):
+def _object(ident, center, dims, yaw_deg=0.0, category="table", confidence="high"):
     a = math.radians(yaw_deg)
     ca, sa = math.cos(a), math.sin(a)
     # 列 0 = 幅方向、列 1 = 上、列 2 = 奥行方向
@@ -42,7 +42,7 @@ def _object(ident, center, dims, yaw_deg=0.0, category="table"):
         "category": {category: {}},
         "dimensions": list(dims),
         "transform": _column_major(rows),
-        "confidence": {"high": {}},
+        "confidence": {confidence: {}},
     }
 
 
@@ -395,3 +395,39 @@ def test_top_surface_stays_with_its_own_box():
         res = segment.split_mesh(mesh, boxes, floor_y=-1.0)
         assert len(res.parts["TBL"].faces) == 1, "天板は机に残る"
         assert len(res.parts["CHR"].faces) == 1, "座面は椅子へ"
+
+
+def test_confidence_is_read_from_room_json(tmp_path):
+    """RoomPlan の信頼度を箱に持つ。
+
+    実測で `medium` の箱は物体を囲えていなかった（椅子が Z 方向に 35cm ずれ）。
+    人が確認すべき対象を出すために、信頼度を落とさず運ぶ。
+    """
+    room = tmp_path / "room.json"
+    room.write_text(json.dumps({"objects": [
+        _object("A", [0.0, 0.4, 0.0], [1.0, 0.8, 1.0], category="table", confidence="high"),
+        _object("B", [2.0, 0.5, 0.0], [0.5, 1.0, 0.5], category="chair", confidence="medium"),
+    ]}))
+    boxes = {b.identifier: b for b in segment.boxes_from_room(room)}
+    assert boxes["A"].confidence == "high"
+    assert boxes["B"].confidence == "medium"
+
+
+def test_box_fix_shifts_the_center(tmp_path):
+    """箱の補正で中心が動く。半径と向きは変えない。
+
+    RoomPlan の箱がずれていても、寸法と向きは合っていることが多い
+    （椅子は 0.54x1.14x0.64 が実物どおりで、位置だけ 35cm 外れていた）。
+    """
+    room = tmp_path / "room.json"
+    room.write_text(json.dumps({"objects": [
+        _object("B", [0.0, 0.5, 2.6], [0.5, 1.0, 0.6], category="chair", confidence="medium"),
+    ]}))
+    plain = segment.boxes_from_room(room)[0]
+    fixed = segment.boxes_from_room(room, fixes={"B": {"dz": -0.35}})[0]
+    assert fixed.center == pytest.approx([0.0, 0.5, 2.25], abs=1e-6)
+    assert fixed.half == pytest.approx(plain.half)
+    assert fixed.axes == pytest.approx(plain.axes)
+    # 補正の対象でない箱は動かない
+    other = segment.boxes_from_room(room, fixes={"別の識別子": {"dz": -1.0}})[0]
+    assert other.center == pytest.approx(plain.center)

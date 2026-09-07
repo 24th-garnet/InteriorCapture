@@ -57,6 +57,13 @@ class Box:
     center: np.ndarray          #: world 座標の中心 (3,)
     axes: np.ndarray            #: 各軸の単位ベクトルを列に持つ (3,3)
     half: np.ndarray            #: 各軸方向の半径 (3,)
+    #: RoomPlan の推定信頼度（"high" / "medium" / "low"）。
+    #:
+    #: **箱の当たり外れとよく対応する。** 実測（room-33d49373）で、
+    #: `high` の 2 つ（収納・テーブル）は最良位置とのずれが 5cm 以内、
+    #: `medium` の椅子は Z 方向に 35cm ずれて箱が椅子を囲っていなかった。
+    #: `medium` は人が確認する対象として扱う。
+    confidence: str = "unknown"
 
     def contains(self, points: np.ndarray, inflate: float = BOX_INFLATE) -> np.ndarray:
         """点群が箱の中にあるかを返す。"""
@@ -69,8 +76,16 @@ class Box:
         return float(self.center[1] - self.half[1])
 
 
-def boxes_from_room(room_json: str | Path) -> list[Box]:
-    """`room.json` の objects を境界箱にする。"""
+def boxes_from_room(room_json: str | Path,
+                    fixes: dict[str, dict] | None = None) -> list[Box]:
+    """`room.json` の objects を境界箱にする。
+
+    `fixes` は識別子ごとの補正 `{"dx":…, "dy":…, "dz":…}`（world 座標、m）。
+    **RoomPlan の箱は物体を囲えていないことがある。** 実測では椅子が Z 方向に
+    35cm ずれ、箱の中身が机の下面と床になっていた。自動補正は試したが、
+    占有を最大化すると信頼できる箱（`high`）まで 30cm 動いてしまい、
+    目視で誤りと確認した。よって**人が直した結果を受け取る**形にする。
+    """
     import json
 
     data = json.loads(Path(room_json).read_text())
@@ -82,14 +97,32 @@ def boxes_from_room(room_json: str | Path) -> list[Box]:
         norms = np.linalg.norm(axes, axis=0)
         norms[norms < 1e-9] = 1.0
         cat = o.get("category")
+        conf = o.get("confidence")
+        ident = str(o["identifier"])
+        center = T[:3, 3].copy()
+        fix = (fixes or {}).get(ident)
+        if fix:
+            center = center + np.array([float(fix.get("dx", 0.0)),
+                                        float(fix.get("dy", 0.0)),
+                                        float(fix.get("dz", 0.0))])
         out.append(Box(
-            identifier=str(o["identifier"]),
+            identifier=ident,
             category=next(iter(cat), "unknown") if isinstance(cat, dict) else str(cat),
-            center=T[:3, 3].copy(),
+            center=center,
             axes=axes / norms,
             half=np.array(o["dimensions"], float) / 2,
+            confidence=(next(iter(conf), "unknown") if isinstance(conf, dict)
+                        else str(conf or "unknown")),
         ))
     return out
+
+
+def load_box_fixes(path: str | Path) -> dict[str, dict]:
+    """箱の補正ファイルを読む。`{識別子: {"dx":…, "dy":…, "dz":…}}`。"""
+    import json
+
+    data = json.loads(Path(path).read_text())
+    return {str(k): dict(v) for k, v in data.get("boxes", data).items()}
 
 
 @dataclass

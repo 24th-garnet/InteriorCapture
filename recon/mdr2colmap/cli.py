@@ -160,7 +160,8 @@ def cmd_arrange(args: argparse.Namespace) -> int:
         return 2
 
     layout = roomplan.load(room)
-    boxes = segment.boxes_from_room(room)
+    fixes = segment.load_box_fixes(args.fix_boxes) if args.fix_boxes else None
+    boxes = segment.boxes_from_room(room, fixes=fixes)
     if not boxes:
         print("家具が検出されていません。切り分ける対象がありません。", file=sys.stderr)
         return 1
@@ -181,7 +182,8 @@ def cmd_arrange(args: argparse.Namespace) -> int:
             part = res.parts.get(b.identifier)
             n = len(part.faces) if part else 0
             label = roomplan.FURNITURE_JA.get(b.category, b.category)
-            print(f"  {label:<8}{n:>9,} 面")
+            warn = "  要確認 (confidence medium)" if b.confidence == "medium" else ""
+            print(f"  {label:<8}{n:>9,} 面{warn}")
             if part is not None and n and args.parts:
                 segment.write_ply_mesh(out / f"part_{b.category}.ply", part)
         print(f"  {'部屋':<8}{len(res.remainder.faces):>9,} 面"
@@ -250,6 +252,9 @@ def main(argv: list[str] | None = None) -> int:
     ar.add_argument("--moves", help="平面図の編集器が書き出した JSON")
     ar.add_argument("--splat", help="splat の PLY も切り分ける（3DGS は採用外）")
     ar.add_argument("--parts", action="store_true", help="家具ごとの PLY も書き出す")
+    ar.add_argument("--fix-boxes",
+                    help="箱の位置補正 JSON。{識別子: {dx,dy,dz}}。"
+                         "RoomPlan の confidence が medium の箱は外れることがある")
     ar.add_argument("--no-carry", action="store_true",
                     help="上に乗っている物を一緒に運ばない（箱の中だけ切り出す）")
     ar.set_defaults(func=cmd_arrange)
