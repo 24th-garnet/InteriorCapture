@@ -232,7 +232,9 @@ struct FloorPlanCanvas: View {
                 tick.addLine(to: t.point(p + normal * 0.34))
                 ctx.stroke(tick, with: .color(Color(white: 0.63)), lineWidth: 1)
             }
-            ctx.draw(Text("\(Int((w.length * 1000).rounded()))")
+            // **桁区切りを入れない。** SwiftUI の数値補間は地域設定で "3,135" に
+            // なるが、建築図面の mm 表記にカンマは使わない。
+            ctx.draw(Text(verbatim: String(Int((w.length * 1000).rounded())))
                         .font(.system(size: 11)).foregroundColor(Color(white: 0.25)),
                      at: t.point(mid + normal * 0.44))
         }
@@ -252,7 +254,8 @@ struct FloorPlanCanvas: View {
         ctx.draw(Text(plan.roomName).font(.system(size: 18, weight: .semibold))
                     .foregroundColor(Color(white: 0.10)),
                  at: CGPoint(x: c.x, y: c.y - 11))
-        ctx.draw(Text("約 \(FloorPlan.displayTatami(plan.area), specifier: "%.1f") 帖")
+        let tatami = String(format: "%.1f", FloorPlan.displayTatami(plan.area))
+        ctx.draw(Text(verbatim: "約 \(tatami) 帖")
                     .font(.system(size: 15)).foregroundColor(Color(white: 0.10)),
                  at: CGPoint(x: c.x, y: c.y + 11))
     }

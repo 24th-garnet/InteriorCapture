@@ -68,10 +68,10 @@ struct PlanReviewView: View {
         var title: String {
             switch self {
             case .opening(let o):
-                return "\(o.category.label)　幅 \(Int((o.width * 1000).rounded())) mm"
+                return "\(o.category.label)　幅 " + String(Int((o.width * 1000).rounded())) + " mm"
             case .furniture(let f):
-                return "\(f.label)　\(Int((f.halfWidth * 2000).rounded()))×"
-                    + "\(Int((f.halfDepth * 2000).rounded())) mm"
+                return f.label + "　" + String(Int((f.halfWidth * 2000).rounded()))
+                    + "×" + String(Int((f.halfDepth * 2000).rounded())) + " mm"
             }
         }
 
@@ -119,7 +119,8 @@ struct PlanReviewView: View {
                      + String(format: "%.2f", FloorPlan.displayArea(p.area)) + " m²"
                      + "（約 " + String(format: "%.1f", FloorPlan.displayTatami(p.area)) + " 帖）")
                     .font(.headline)
-                Text("内法実測　天井高 \(Int((p.ceilingHeight * 1000).rounded())) mm"
+                Text(verbatim: "内法実測　天井高 "
+                     + String(Int((p.ceilingHeight * 1000).rounded())) + " mm"
                      + "　戸 \(p.openings(.door).count)　窓 \(p.openings(.window).count)"
                      + "　寸法 mm" + (p.north == nil ? "　方位未計測" : ""))
                     .font(.caption).foregroundStyle(.secondary)
@@ -241,9 +242,9 @@ struct PlanReviewView: View {
 
     private func openingControls(_ o: FloorPlan.Opening) -> some View {
         VStack(spacing: 6) {
-            Text("幅 \(Int((o.width * 1000).rounded())) mm　"
-                 + "高 \(Int((o.height * 1000).rounded())) mm　"
-                 + "下端 \(Int((o.sill * 1000).rounded())) mm")
+            Text(verbatim: "幅 " + String(Int((o.width * 1000).rounded())) + " mm　"
+                 + "高 " + String(Int((o.height * 1000).rounded())) + " mm　"
+                 + "下端 " + String(Int((o.sill * 1000).rounded())) + " mm")
                 .font(.caption).foregroundStyle(.secondary)
             Picker("種別", selection: Binding(
                 get: { o.category },
@@ -262,8 +263,8 @@ struct PlanReviewView: View {
     private func furnitureControls(_ f: FloorPlan.Furniture) -> some View {
         let fix = corrections.boxes[f.id.uuidString] ?? .init()
         return VStack(spacing: 6) {
-            Text("\(f.label)　補正 X \(Int((fix.dx * 1000).rounded())) mm / "
-                 + "Z \(Int((fix.dz * 1000).rounded())) mm")
+            Text(verbatim: f.label + "　補正 X " + String(Int((fix.dx * 1000).rounded()))
+                 + " mm / Z " + String(Int((fix.dz * 1000).rounded())) + " mm")
                 .font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 nudgeButton("chevron.up", dx: 0, dz: -PlanReviewView.nudge, id: f.id)
