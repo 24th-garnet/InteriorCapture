@@ -699,6 +699,12 @@ CEILING_BAND = 0.10
 #: 箱を膨らませて解こうとすると机と床を巻き込む。**面の隣接をたどれば、
 #: 実際に椅子とつながっている面だけを取り込める。** 床・壁の帯と他の家具は
 #: 候補から外すので、そこで自然に止まる。
+#:
+#: **この値には根拠のある止め所がない。** 1 部屋での掃引（2cm〜40cm）で
+#: 家具の面積は 11.79 -> 13.14 m2 と単調に増え、床・壁の混入は 0.503 / 0.467 m2
+#: から一切動かない。つまり平坦部がなく、大きくすれば取り込みが増えるだけ。
+#: 15cm は実測したアームレストのはみ出し +14.3cm を覆う値として選んだにすぎない。
+#: **系のなかで最も弱い定数。** 部屋を増やして決め直す必要がある。
 GROW_MARGIN = 0.15
 #: 取り込みの障壁。**床に近い水平面と壁に近い垂直面は部屋とみなして越えない。**
 #:
@@ -708,6 +714,9 @@ GROW_MARGIN = 0.15
 #:
 #: 代償として、箱の外にあるキャスターの先端（床上 10cm 未満の水平面）は
 #: 取り込めない。ラグを持って行くより、爪先を残すほうが良い。
+#:
+#: 掃引すると 10cm 以上で混入が飽和し（0.10〜0.25 で 0.503 / 0.467 m2 のまま）、
+#: 下回ると急に増える（2cm で 0.722 / 0.969）。平坦部の入口にあたる。
 GROW_ROOM_BAND = 0.10
 #: 床とみなす法線の垂直成分（これ以上なら水平面）。
 GROW_FLOOR_NORMAL = 0.85
@@ -761,12 +770,13 @@ def face_adjacency(faces: np.ndarray, vertices: np.ndarray,
 
 
 def room_like(centroids: np.ndarray, normals: np.ndarray, floor_y: float,
-              walls, band: float = GROW_ROOM_BAND) -> np.ndarray:
+              walls, band: float | None = None) -> np.ndarray:
     """部屋の面（床・ラグ・壁）とみなせる面。取り込みの障壁になる。
 
     「近い」だけでは家具の脚も引っかかる。**向きも見る。** 床は水平、
     壁は垂直なので、法線が合っていて近いものだけを部屋とする。
     """
+    band = GROW_ROOM_BAND if band is None else band
     flat = np.abs(normals[:, 1]) > GROW_FLOOR_NORMAL
     upright = np.abs(normals[:, 1]) < GROW_WALL_NORMAL
     return ((flat & (centroids[:, 1] - floor_y < band))
@@ -776,7 +786,7 @@ def room_like(centroids: np.ndarray, normals: np.ndarray, floor_y: float,
 def grow_mask(box: Box, centroids: np.ndarray, seed: np.ndarray,
               available: np.ndarray, adj: list[list[int]],
               barrier: np.ndarray | None = None,
-              margin: float = GROW_MARGIN) -> np.ndarray:
+              margin: float | None = None) -> np.ndarray:
     """箱の中の面から辺をたどって、はみ出した部分を取り込む。
 
     `seed` はすでにこの箱に属している面、`available` はまだどの家具にも
@@ -787,6 +797,7 @@ def grow_mask(box: Box, centroids: np.ndarray, seed: np.ndarray,
     """
     from collections import deque
 
+    margin = GROW_MARGIN if margin is None else margin
     local = np.abs((centroids - box.center) @ box.axes)
     near = np.all(local <= box.half + margin, axis=1)
     cand = available & near
