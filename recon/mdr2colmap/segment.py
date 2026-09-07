@@ -104,25 +104,46 @@ class SplitMesh:
     floor_excluded: int
 
 
+def environment_mask(centroids: np.ndarray, floor_y: float, ceiling_y: float,
+                     walls, floor_margin: float = FLOOR_MARGIN) -> np.ndarray:
+    """床・壁・天井の帯。**家具に割り当ててはいけない領域。**
+
+    箱は物体の境界ではないので、壁付きの家具の箱には壁が入る。
+    実在する面（床平面・壁平面）で線を引くのが、幾何側で使える唯一の
+    確かな手がかり。
+    """
+    return ((centroids[:, 1] < floor_y + floor_margin)
+            | (centroids[:, 1] > ceiling_y - CEILING_BAND)
+            | (_wall_distance(centroids, walls) < WALL_BAND))
+
+
 def assign_faces(centroids: np.ndarray, boxes: list[Box], floor_y: float,
                  floor_margin: float = FLOOR_MARGIN,
                  walls=None, ceiling_y: float | None = None) -> np.ndarray:
     """面（の重心）を家具に振り分ける。戻り値は箱の添字、-1 は部屋。
 
-    `walls` と `ceiling_y` を渡すと、家具の上に乗っている物も一緒に運ぶ
-    （`carry_mask` を参照）。渡さなければ箱の中だけを取る。
+    `walls` と `ceiling_y` を渡すと:
+      - 床・壁・天井の帯を家具から除外する（`environment_mask`）
+      - 家具の上に乗っている物を一緒に運ぶ（`carry_mask`）
+
+    渡さなければ箱の中だけを取る（帯の除外も運搬もしない）。
     """
     near_floor = centroids[:, 1] < floor_y + floor_margin
+    if walls is not None and ceiling_y is not None:
+        env = environment_mask(centroids, floor_y, ceiling_y, walls, floor_margin)
+    else:
+        env = near_floor
+
     assigned = np.full(len(centroids), -1, dtype=np.int32)
     for i, b in enumerate(boxes):
-        inside = b.contains(centroids) & ~near_floor & (assigned < 0)
+        inside = b.contains(centroids) & ~env & (assigned < 0)
         assigned[inside] = i
 
     if walls is not None and ceiling_y is not None:
         # 箱の割り当てが終わってから運ぶ。先に運ぶと、隣の家具を
         # 荷物として奪い合う。
         for i, b in enumerate(boxes):
-            add = carry_mask(b, centroids, (assigned < 0) & ~near_floor,
+            add = carry_mask(b, centroids, (assigned < 0) & ~env,
                              walls, ceiling_y, own=(assigned == i))
             assigned[add] = i
     return assigned
@@ -568,6 +589,24 @@ CARRY_LAYER = 0.05
 CARRY_MAX = 1.0
 #: 壁からこの距離以内は壁面とみなして運ばない。運ぶと壁が裂ける。
 WALL_CLEARANCE = 0.10
+#: 家具の割り当てから除外する壁帯の幅。
+#:
+#: **壁付きの家具は壁を大量に連れて行く。** 実測（room-33d49373）で、
+#: 収納に割り当てた 4.50 m2 のうち 45.6% が壁から 10cm 以内、
+#: テーブルは 23.7% だった。動かすと壁が裂ける。
+#:
+#: 幅を掃引した結果（混入 = 壁から 2cm 以内で法線が水平な面の面積）:
+#:
+#:      0cm  混入 0.659 m2 (5.5%)  家具 11.95 m2
+#:      4cm  混入 0.000            家具 10.30      <- 採用
+#:      7cm  混入 0.000            家具  9.59
+#:     10cm  混入 0.000            家具  9.09
+#:
+#: **4cm で混入がゼロになり、それ以上広げても家具を削るだけ。**
+#: 取り除かれるのは壁を向いた皮で、遮蔽されて元々見えない。
+WALL_BAND = 0.04
+#: 天井帯。天井付近の面も家具に含めない。
+CEILING_BAND = 0.10
 #: 天井付近も運ばない。
 CEILING_CLEARANCE = 0.15
 #: 天板の外形をこの倍率で広げて判定する。縁に載った物を拾うため。

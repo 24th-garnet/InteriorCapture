@@ -288,3 +288,52 @@ def test_carry_does_not_steal_from_another_object():
 
     assert len(res.parts.get("TALL", Mesh(np.zeros((0, 3)), np.zeros((0, 3), np.int64))).faces) == 1
     assert "LOW" not in res.parts or len(res.parts["LOW"].faces) == 0
+
+
+# -- 環境の帯を家具から除外する ----------------------------------------------
+
+
+def test_environment_mask_excludes_wall_floor_ceiling():
+    walls = [_Wall([-3.0, 0.0], [3.0, 0.0])]        # z=0 に壁
+    pts = np.array([
+        [0.0, 1.0, 0.02],      # 壁から 2cm -> 環境
+        [0.0, 1.0, 1.00],      # 壁から 1m  -> 環境でない
+        [0.0, 0.01, 1.00],     # 床すぐ上   -> 環境
+        [0.0, 2.35, 1.00],     # 天井すぐ下 -> 環境
+    ])
+    env = segment.environment_mask(pts, floor_y=0.0, ceiling_y=2.4, walls=walls)
+    assert env.tolist() == [True, False, True, True]
+
+
+def test_wall_adjacent_furniture_does_not_take_the_wall():
+    """壁付きの家具の箱には壁が入る。帯で除外しないと壁が裂ける。
+
+    実測で収納に割り当てた面積の 45.6% が壁から 10cm 以内だった。
+    """
+    b = segment.Box("S", "storage", np.array([0.0, 1.0, 0.15]), np.eye(3),
+                    np.array([0.4, 1.0, 0.2]))
+    walls = [_Wall([-3.0, 0.34], [3.0, 0.34])]      # 箱の背面ぎりぎりに壁
+    verts, faces = [], []
+
+    def add(z):
+        i = len(verts)
+        verts.extend(_tri(0.0, 1.0, z))
+        faces.append([i, i + 1, i + 2])
+
+    add(0.32)      # 壁から 2cm。箱の中だが壁面
+    add(0.05)      # 箱の中で壁から離れている
+    mesh = Mesh(vertices=np.array(verts, np.float32), faces=np.array(faces, np.int64))
+
+    res = segment.split_mesh(mesh, [b], floor_y=0.0, walls=walls, ceiling_y=2.4)
+    assert len(res.parts["S"].faces) == 1, "壁面は家具に入れない"
+    assert len(res.remainder.faces) == 1
+
+
+def test_veto_is_off_without_walls():
+    """壁を渡さなければ従来どおり箱の中だけを取る。既定を変えない。"""
+    b = segment.Box("S", "storage", np.array([0.0, 1.0, 0.15]), np.eye(3),
+                    np.array([0.4, 1.0, 0.2]))
+    verts = _tri(0.0, 1.0, 0.32)
+    mesh = Mesh(vertices=np.array(verts, np.float32), faces=np.array([[0, 1, 2]], np.int64))
+    res = segment.split_mesh(mesh, [b], floor_y=0.0)
+    assert len(res.parts["S"].faces) == 1
