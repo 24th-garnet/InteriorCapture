@@ -69,9 +69,7 @@ Python 側は標準ライブラリ `zlib.decompress(data, wbits=-15)` で扱え�
     "format": "float16",
     "unit": "meter"
   },
-  "world_alignment": "gravityAndHeading",
-  "heading": {"available": true, "authorization": "authorizedWhenInUse",
-              "usable": true, "accuracy_deg": 8.0, "true_heading_deg": 132.4},
+  "world_alignment": "gravity",
   "gravity": [0.0, -1.0, 0.0],
   "frame_count": 412,
   "duration_sec": 92.4
@@ -83,8 +81,7 @@ Python 側は標準ライブラリ `zlib.decompress(data, wbits=-15)` で扱え�
 | `device.model` | `utsname.machine`（例 `iPad8,11`）。実機の素性を残す |
 | `video` | `ARConfiguration.VideoFormat` の実値。**想定を書かず実測を書く** |
 | `depth` | `sceneDepth.depthMap` の実解像度と形式 |
-| `world_alignment` | `"gravityAndHeading"`（真北に揃った）か `"gravity"`（揃わなかった）。前者は **+X が東 / +Z が南**なので間取り図に方位を描ける |
-| `heading` | 方位が取れたかの記録。`usable` が真のときだけ図に北を描く。**取れていないのに描くと販売図面に嘘の方位が載る** |
+| `world_alignment` | 現在は常に `"gravity"`。`"gravityAndHeading"` は真北に揃い（**+X が東 / +Z が南**）間取り図に方位を描けるが、実測で磁気コンパスの精度が 28.8° / 27.3° と屋内では使用に耐えず撤回した（`heading` キーも同時に撤回）。読み手は両方の値を想定すること |
 | `gravity` | ARKit world 座標系での重力方向。`.gravity` 整合なら概ね `[0,-1,0]` |
 
 ---

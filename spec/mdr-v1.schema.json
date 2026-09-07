@@ -124,7 +124,7 @@
         },
         "heading": {
           "type": "object",
-          "description": "方位が取れたかの記録。usable が真のときだけ図に北を描く",
+          "description": "方位が取れたかの記録。現在の撮影は .gravity なので出力されない。過去のバンドルにのみ現れる（実測で屋内の精度が 28° 前後で使用に耐えなかった）",
           "properties": {
             "available": {
               "type": "boolean"

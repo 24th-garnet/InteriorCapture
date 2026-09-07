@@ -1,5 +1,4 @@
 import ARKit
-import CoreLocation
 import RoomPlan
 import UIKit
 import Combine
@@ -9,10 +8,13 @@ import simd
 /// ARSession を回してキーフレームを MDR バンドルに落とす。
 ///
 /// 設定の要点（docs/pipeline.md §2）:
-/// - `worldAlignment` … 方位が使えるなら `.gravityAndHeading`、駄目なら `.gravity`。
-///   前者は +X が東 / +Z が南に揃うので、間取り図に真北を描ける。磁気コンパス
-///   依存で屋内では精度が落ちるため、`Heading` で許可と精度を確かめ、
-///   **採用したかどうかを manifest に残す**（嘘の方位を図に載せないため）。
+/// - `worldAlignment = .gravity` … Y 軸が重力に一致し床・壁が軸整合になる。
+///   **`.gravityAndHeading` は使わない。** 間取り図に真北を入れるために一度
+///   採用したが、実測で 2 回とも磁気コンパスの精度が 28.8° / 27.3° と
+///   使用に耐えず（上限は 20°）、方位は得られなかった。得るものが無い一方で、
+///   同じ期間に焼き込みが 30 倍以上遅くなり最後にアプリが落ちたため、
+///   撮影経路を速かった時点の挙動に戻した。原因の切り分けは
+///   `docs/timing-and-quality.md`。
 /// - `frameSemantics = [.sceneDepth]` … 生の深度のみ。smoothed は併用しない（A12Z の負荷）。
 /// - 1920x1440 @30fps … A12Z は ARKit 4K 非対応。60fps は熱予算を食うだけ。
 ///
@@ -55,14 +57,11 @@ final class CaptureSession: NSObject, ObservableObject {
     @available(iOS 17.0, *)
     var capturedRoom: CapturedRoom? { finalRoom as? CapturedRoom }
 
-    /// 平面図に描く北。**採用できた撮影だけ返す。**
-    var planNorth: SIMD2<Double>? {
-        guard appliedAlignment == "gravityAndHeading", heading.report.isUsable else {
-            return nil
-        }
-        // .gravityAndHeading の world は +X が東 / +Z が南。北は -Z。
-        return SIMD2(0, -1)
-    }
+    /// 平面図に描く北。**`.gravity` では取れないので常に nil。**
+    ///
+    /// 過去のスキャンについては `ScanLibrary` が manifest から判定する
+    /// （`world_alignment` が `gravityAndHeading` かつ `heading.usable` のときだけ）。
+    var planNorth: SIMD2<Double>? { nil }
 
     /// A12Z の発熱で長時間の撮影は品質が落ちる。Scaniverse の docs 上限 5 分より保守的に切る。
     /// 公式サポートも「1〜3 分がベスト、それ以上は品質が落ちる」としている。
@@ -84,10 +83,8 @@ final class CaptureSession: NSObject, ObservableObject {
     private var deviceReport: DeviceProbe.Report?
     private weak var session: ARSession?
 
-    /// 真北。`ARSession.run` より先に更新を始める必要がある。
-    let heading = Heading()
-    /// 実際に採用した world 座標の揃え方。manifest に残す。
-    private var appliedAlignment = "gravity"
+    /// manifest に残す world 座標の揃え方。
+    private let appliedAlignment = "gravity"
 
     /// 焼き込み用のフレーム保持と GPU 実装。撮影と並行して溜める。
     private let encoder = ImageEncoder()
@@ -124,8 +121,6 @@ final class CaptureSession: NSObject, ObservableObject {
             )
         }
 
-        // 方位は ARSession より先に開始する。後からでは間に合わない。
-        heading.start()
         let config = makeConfiguration(report)
         DispatchQueue.main.async { self.probe = report }
 
@@ -152,17 +147,7 @@ final class CaptureSession: NSObject, ObservableObject {
 
     private func makeConfiguration(_ report: DeviceProbe.Report) -> ARWorldTrackingConfiguration {
         let config = ARWorldTrackingConfiguration()
-        // 方位が使える見込みがあれば真北に揃える。許可が未確定の段階でも、
-        // コンパス自体が使えるなら要求しておく（許可後に効く）。拒否・非対応の
-        // 端末では .gravity のままにし、manifest にそう書く。
-        if CLLocationManager.headingAvailable(), heading.report.authorization != "denied",
-           heading.report.authorization != "restricted" {
-            config.worldAlignment = .gravityAndHeading
-            appliedAlignment = "gravityAndHeading"
-        } else {
-            config.worldAlignment = .gravity
-            appliedAlignment = "gravity"
-        }
+        config.worldAlignment = .gravity
         config.environmentTexturing = .none
         config.planeDetection = []
 
@@ -222,8 +207,7 @@ final class CaptureSession: NSObject, ObservableObject {
                 try? writer.writeMesh(anchors: anchors)
                 try writer.finish(probe: report, format: format,
                                   gravity: SIMD3<Float>(0, -1, 0),
-                                  worldAlignment: self.appliedAlignment,
-                                  heading: self.heading.report)
+                                  worldAlignment: self.appliedAlignment)
                 let url = writer.bundleURL
 
                 // RoomPlan の確定処理。焼き込みより先に投げて並行させる。
