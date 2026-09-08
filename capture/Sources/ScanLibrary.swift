@@ -1,14 +1,10 @@
 import Foundation
-import RoomPlan
-import simd
 
 /// Documents にある過去の MDR バンドルを一覧する。
 ///
-/// 端末で見返せるようにする理由
-/// -------------------------
-/// 平面図は `room.json` だけで作れる（`FloorPlan` 参照）。訂正も端末側で行う
-/// ので、**撮り直しに来る前に過去のスキャンを開いて直せる**必要がある。
-/// 3D は焼き込み時に `mesh.usdz` を書いているので Quick Look で開ける。
+/// **端末側は 3D 生成に集中する**（当初の設計）。ここでできるのは、
+/// 焼き込んだ 3D を Quick Look で見返すことと、焼き込みの所要時間を
+/// 確かめること。間取り図はサーバ側（`recon/`）で作る。
 final class ScanLibrary: ObservableObject {
 
     struct Scan: Identifiable, Equatable {
@@ -25,9 +21,7 @@ final class ScanLibrary: ObservableObject {
         var durationSec: Double?
         var deviceModel: String?
         var worldAlignment: String?
-        var headingUsable: Bool?
 
-        var hasRoom = false        // room.json（平面図を作れる）
         var hasUSDZ = false        // mesh.usdz（Quick Look で開ける）
         var hasGLB = false
         var hasFixes = false       // 人手の訂正が保存済み
@@ -47,24 +41,9 @@ final class ScanLibrary: ObservableObject {
         /// バイト数。走査に時間がかかるので後から埋める。
         var byteSize: Int64?
 
-        /// 平面図に描く北。`.gravityAndHeading` で撮れていたときだけ。
-        var north: SIMD2<Double>? {
-            guard worldAlignment == "gravityAndHeading", headingUsable == true else {
-                return nil
-            }
-            // world は +X が東 / +Z が南。北は -Z。
-            return SIMD2(0, -1)
-        }
 
-        var roomJSONURL: URL { url.appendingPathComponent("room.json") }
         var usdzURL: URL { url.appendingPathComponent("mesh.usdz") }
 
-        /// `room.json` から `CapturedRoom` を復元する。**`Codable` なのでそのまま戻せる。**
-        @available(iOS 17.0, *)
-        func loadRoom() throws -> CapturedRoom {
-            let data = try Data(contentsOf: roomJSONURL)
-            return try JSONDecoder().decode(CapturedRoom.self, from: data)
-        }
     }
 
     @Published private(set) var scans: [Scan] = []
@@ -118,21 +97,17 @@ final class ScanLibrary: ObservableObject {
         var out: [Scan] = []
         for url in entries where url.pathExtension == "mdr" {
             var scan = Scan(url: url)
-            scan.hasRoom = fm.fileExists(atPath: scan.roomJSONURL.path)
             scan.hasUSDZ = fm.fileExists(atPath: scan.usdzURL.path)
             scan.hasGLB = fm.fileExists(
                 atPath: url.appendingPathComponent("mesh.glb").path)
             scan.hasFixes = fm.fileExists(
-                atPath: url.appendingPathComponent(PlanCorrections.fileName).path)
+                atPath: url.appendingPathComponent("fixes.json").path)
 
             if let data = try? Data(contentsOf: url.appendingPathComponent("manifest.json")),
                let m = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 scan.frameCount = m["frame_count"] as? Int
                 scan.durationSec = m["duration_sec"] as? Double
                 scan.worldAlignment = m["world_alignment"] as? String
-                if let h = m["heading"] as? [String: Any] {
-                    scan.headingUsable = h["usable"] as? Bool
-                }
                 if let d = m["device"] as? [String: Any] {
                     scan.deviceModel = d["model"] as? String
                 }

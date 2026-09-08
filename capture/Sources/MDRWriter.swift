@@ -177,8 +177,7 @@ final class MDRWriter {
 
     func finish(probe: DeviceProbe.Report, format: ARConfiguration.VideoFormat,
                 gravity: SIMD3<Float>?,
-                worldAlignment: String = "gravity",
-                roomPlanFinalized: Bool = false) throws {
+                worldAlignment: String = "gravity") throws {
         try poseLines.joined(separator: "\n").appending("\n")
             .write(to: bundleURL.appendingPathComponent("poses.jsonl"), atomically: true, encoding: .utf8)
 
@@ -205,16 +204,6 @@ final class MDRWriter {
             ],
             "world_alignment": worldAlignment,
             "frame_count": frameCount,
-        ]
-        // RoomPlan の由来。**精細化（RoomBuilder / beautifyObjects）を
-        // 端末では回さない。** 焼き込みと資源を取り合って空回りが爆発するため
-        // （実測で CPU 1077 秒 / 壁時計 202 秒）。room.json は撮影中の
-        // `didUpdate` が返した推定値で、箱の精度は精細化版より低い。
-        // サーバ側はこれを見て扱いを変えられる。
-        manifest["roomplan"] = [
-            "finalized": roomPlanFinalized,
-            "source": roomPlanFinalized ? "RoomBuilder" : "live",
-            "raw_data": "room_raw.json",
         ]
         if let g = gravity {
             manifest["gravity"] = [Double(g.x), Double(g.y), Double(g.z)]

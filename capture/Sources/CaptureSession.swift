@@ -1,5 +1,4 @@
 import ARKit
-import RoomPlan
 import UIKit
 import Combine
 import Foundation
@@ -16,6 +15,12 @@ import simd
 ///   撮影経路を速かった時点の挙動に戻した。原因の切り分けは
 ///   `docs/timing-and-quality.md`。
 /// - `frameSemantics = [.sceneDepth]` … 生の深度のみ。smoothed は併用しない（A12Z の負荷）。
+///
+/// **RoomPlan は同居させない。** `RootView` の別モードで、同じ部屋を別々に撮る
+/// （当初の設計）。一度は撮影経路に同居させたが、実測で焼き込みが 14 倍に
+/// 崩れた。`room.json` を持たない 4 件はいずれも 15〜16 秒（36 秒の 1 件は
+/// `chart.maxIterations` 導入前）、持つ 5 件のうち 4 件が 178〜229 秒だった。
+/// 端末側は最速の 3D 生成だけに集中する。
 /// - 1920x1440 @30fps … A12Z は ARKit 4K 非対応。60fps は熱予算を食うだけ。
 ///
 /// スレッド設計: 録画状態と writer は `queue`（専用シリアルキュー）だけが触る。
@@ -42,26 +47,6 @@ final class CaptureSession: NSObject, ObservableObject {
     /// オンデバイス焼き込みの進捗（0..1）。nil なら実行していない。
     @Published private(set) var bakeProgress: Double?
     @Published private(set) var bakeSummary: String?
-    /// RoomPlan が検出した壁・物体の数。撮影中の手応えとして出す。
-    @Published private(set) var roomWalls = 0
-    @Published private(set) var roomObjects = 0
-
-    /// `RoomBuilder` が返った間取り。端末で平面図を出すために保持する。
-    ///
-    /// `CapturedRoom` は iOS 17 以降の型なので `AnyObject` で持つ。
-    /// **平面図はメッシュも画像も要らない**（`FloorPlan` 参照）ので、
-    /// 焼き込みを待たずにこれが入った時点で図を出せる。
-    @Published private(set) var roomReady = false
-    private var finalRoom: AnyObject?
-
-    @available(iOS 17.0, *)
-    var capturedRoom: CapturedRoom? { finalRoom as? CapturedRoom }
-
-    /// 平面図に描く北。**`.gravity` では取れないので常に nil。**
-    ///
-    /// 過去のスキャンについては `ScanLibrary` が manifest から判定する
-    /// （`world_alignment` が `gravityAndHeading` かつ `heading.usable` のときだけ）。
-    var planNorth: SIMD2<Double>? { nil }
 
     /// A12Z の発熱で長時間の撮影は品質が落ちる。Scaniverse の docs 上限 5 分より保守的に切る。
     /// 公式サポートも「1〜3 分がベスト、それ以上は品質が落ちる」としている。
@@ -129,15 +114,6 @@ final class CaptureSession: NSObject, ObservableObject {
     private var frameStore: FrameStore?
     private var baker: OnDeviceBaker?
 
-    /// MDR と同じ ARSession の上で回す RoomPlan。詳細は `RoomScan`。
-    ///
-    /// **撮影開始前から回す。** RoomPlan は起動時に共有セッションから
-    /// `.sceneDepth` を落とすため、戻すまでの約 1.5 秒は深度が来ない。
-    /// 録画ボタンを押す前に済ませておけば、記録されるフレームは全て深度付きになる。
-    private var roomScan: AnyObject?
-
-    @available(iOS 17.0, *)
-    private var typedRoomScan: RoomScan? { roomScan as? RoomScan }
 
     // MARK: - セットアップ
 
@@ -167,21 +143,6 @@ final class CaptureSession: NSObject, ObservableObject {
         session.delegateQueue = queue
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
 
-        // 同一セッションで RoomPlan も回す。座標系が一致するので、
-        // 間取り図と 3D モデルを重ねるための位置合わせが要らなくなる。
-        if #available(iOS 17.0, *) {
-            let scan = RoomScan()
-            roomScan = scan
-            scan.start(on: session)
-            // 撮影中の手応え表示のため、検出数を定期的に拾う。
-            Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] t in
-                guard let self, let scan = self.typedRoomScan, scan.isRunning else {
-                    t.invalidate(); return
-                }
-                self.roomWalls = scan.wallCount
-                self.roomObjects = scan.objectCount
-            }
-        }
     }
 
     private func makeConfiguration(_ report: DeviceProbe.Report) -> ARWorldTrackingConfiguration {
@@ -249,30 +210,6 @@ final class CaptureSession: NSObject, ObservableObject {
                                   worldAlignment: self.appliedAlignment)
                 let url = writer.bundleURL
 
-                // RoomPlan は**止めるだけ**。`RoomBuilder` は回さない。
-                //
-                // 以前は焼き込みと並行させていた（「ML なので競合しにくい」
-                // という想定）。実測でそれは誤りだった。room-428768ea は
-                // 壁時計 202.5 秒に対しプロセスの CPU 時間 1077 秒で、
-                // 残メモリ 3.3GB・温度 nominal・離脱 0 秒。xatlas の
-                // スケジューラがタスクごとに全ワーカを起こし、待機は
-                // `yield()` のスピンなので、コアを取り合うと空回りが爆発する。
-                //
-                // 端末側は最速の 3D 生成と最低限の RoomPlan 撮影だけを担い、
-                // 精細化と間取り図はサーバ側（M1 Max）に寄せる。
-                if #available(iOS 17.0, *), let scan = self.typedRoomScan {
-                    Task { @MainActor in
-                        let room = await scan.finish()
-                        scan.writeRawData(to: url)
-                        if let room {
-                            scan.write(room, to: url)
-                            self.roomWalls = room.walls.count
-                            self.roomObjects = room.objects.count
-                            self.finalRoom = room as AnyObject
-                            self.roomReady = true
-                        }
-                    }
-                }
 
                 // Tier 1: テクスチャ付きメッシュを iPad 上で生成する。
                 // 3DGS は Mac 側に残す（A12Z では非現実的で、Scaniverse 自身も

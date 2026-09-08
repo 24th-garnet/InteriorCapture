@@ -56,7 +56,6 @@ final class ScanLibraryTests: XCTestCase {
         XCTAssertEqual(scan.frameCount, 292)
         XCTAssertEqual(try XCTUnwrap(scan.durationSec), 64.6, accuracy: 0.01)
         XCTAssertEqual(scan.deviceModel, "iPad8,11")
-        XCTAssertTrue(scan.hasRoom)
         XCTAssertTrue(scan.hasUSDZ)
         XCTAssertTrue(scan.hasGLB)
         XCTAssertFalse(scan.hasFixes)
@@ -78,30 +77,10 @@ final class ScanLibraryTests: XCTestCase {
                        ["room-new", "room-old"])
     }
 
-    /// **取れていない撮影に北を与えない。** 嘘の方位を図に載せないため。
-    func testNorthOnlyWhenTheHeadingWasUsable() throws {
-        _ = try makeBundle("room-a.mdr", manifest: ["world_alignment": "gravity"])
-        XCTAssertNil(try XCTUnwrap(ScanLibrary.enumerate(in: root).first).north)
-
-        try? FileManager.default.removeItem(at: root.appendingPathComponent("room-a.mdr"))
-        _ = try makeBundle("room-b.mdr", manifest: [
-            "world_alignment": "gravityAndHeading",
-            "heading": ["available": true, "usable": false, "accuracy_deg": 45.0],
-        ])
-        XCTAssertNil(try XCTUnwrap(ScanLibrary.enumerate(in: root).first).north)
-
-        try? FileManager.default.removeItem(at: root.appendingPathComponent("room-b.mdr"))
-        _ = try makeBundle("room-c.mdr", manifest: [
-            "world_alignment": "gravityAndHeading",
-            "heading": ["available": true, "usable": true, "accuracy_deg": 8.0],
-        ])
-        let n = try XCTUnwrap(try XCTUnwrap(ScanLibrary.enumerate(in: root).first).north)
-        XCTAssertEqual(n, SIMD2(0, -1), "+X が東 / +Z が南なので北は -Z")
-    }
 
     func testFixesAreDetected() throws {
         _ = try makeBundle("room-d.mdr", manifest: nil,
-                           files: [PlanCorrections.fileName])
+                           files: ["fixes.json"])
         XCTAssertTrue(try XCTUnwrap(ScanLibrary.enumerate(in: root).first).hasFixes)
     }
 

@@ -27,7 +27,6 @@ struct ARViewContainer: UIViewRepresentable {
 struct CaptureView: View {
     @StateObject private var capture = CaptureSession()
     @State private var showProbe = false
-    @State private var showPlan = false
     @State private var showLibrary = false
     /// RoomPlan と同居できるかの実測。撮影経路を作り直す前に潰しておく。
     @StateObject private var coexist = CoexistProbeBox()
@@ -49,15 +48,6 @@ struct CaptureView: View {
         .sheet(isPresented: $showLibrary) {
             ScanListView()
         }
-        .sheet(isPresented: $showPlan) {
-            if #available(iOS 17.0, *), let room = capture.capturedRoom {
-                PlanReviewView(room: room,
-                               bundleURL: finishedBundleURL,
-                               north: capture.planNorth)
-            } else {
-                Text("間取りがまだ確定していません").padding()
-            }
-        }
         .alert("エラー", isPresented: .constant(isFailed)) {
             Button("OK") { capture.acknowledge() }
         } message: {
@@ -65,11 +55,6 @@ struct CaptureView: View {
         }
     }
 
-    /// 保存済みバンドルの場所。訂正の書き出し先。
-    private var finishedBundleURL: URL? {
-        if case .finished(let url) = capture.state { return url }
-        return nil
-    }
 
     private var isFailed: Bool {
         if case .failed = capture.state { return true }
@@ -85,9 +70,6 @@ struct CaptureView: View {
             label("実効", String(format: "%.1f fps", effectiveFPS))
             if capture.thermal != .nominal {
                 label("温度", thermalText).foregroundStyle(.orange)
-            }
-            if capture.roomWalls > 0 {
-                label("壁", "\(capture.roomWalls)")
             }
             if !capture.lastRejection.isEmpty {
                 label("棄却", capture.lastRejection).foregroundStyle(.secondary)

@@ -2,17 +2,16 @@ import QuickLook
 import SwiftUI
 import UIKit
 
-/// 過去のスキャンを選んで開く。
+/// 過去のスキャンを選んで 3D を見返す。
 ///
-/// 平面図は `room.json` だけで作れるので、撮り直しに来なくても後から確認・訂正
-/// できる。3D は焼き込み時の `mesh.usdz` を Quick Look で開く
-/// （**iOS の Quick Look は GLB を開けない**ので USDZ の方を使う）。
+/// **端末側は 3D 生成に集中する**（当初の設計）。3D は焼き込み時の
+/// `mesh.usdz` を Quick Look で開く（**iOS の Quick Look は GLB を
+/// 開けない**ので USDZ の方を使う）。間取り図はサーバ側で作る。
 struct ScanListView: View {
 
     @StateObject private var library = ScanLibrary()
     @Environment(\.dismiss) private var dismiss
 
-    @State private var planScan: ScanLibrary.Scan?
     @State private var quickLookURL: URL?
     @State private var deleting: ScanLibrary.Scan?
     @State private var loadError: String?
@@ -36,8 +35,8 @@ struct ScanListView: View {
                                 row(scan)
                             }
                         } footer: {
-                            Text("平面図は room.json だけで作れます。3D は焼き込み時の "
-                                 + "mesh.usdz を開きます。")
+                            Text("3D は焼き込み時の mesh.usdz を開きます。"
+                                 + "間取り図はサーバ側で作ります。")
                         }
                     }
                 }
@@ -57,13 +56,6 @@ struct ScanListView: View {
                 }
             }
             .onAppear { library.reload() }
-            .sheet(item: $planScan) { scan in
-                if #available(iOS 17.0, *) {
-                    planSheet(scan)
-                } else {
-                    Text("平面図の表示には iOS 17 以降が必要です").padding()
-                }
-            }
             .sheet(item: $quickLookURL) { url in
                 QuickLookView(url: url)
             }
@@ -84,18 +76,6 @@ struct ScanListView: View {
         }
     }
 
-    @available(iOS 17.0, *)
-    @ViewBuilder
-    private func planSheet(_ scan: ScanLibrary.Scan) -> some View {
-        if let room = try? scan.loadRoom() {
-            PlanReviewView(room: room, bundleURL: scan.url, north: scan.north)
-        } else {
-            VStack(spacing: 10) {
-                Text("room.json を読めませんでした").font(.headline)
-                Text(scan.name).font(.system(.caption, design: .monospaced))
-            }.padding()
-        }
-    }
 
     // MARK: 行
 
@@ -125,7 +105,6 @@ struct ScanListView: View {
                 } else {
                     label("計測中")
                 }
-                if scan.north != nil { badge("方位", .blue) }
                 if scan.hasFixes { badge("訂正済", .green) }
                 if let c = scan.bakeConfiguration, c != "Release" { badge(c, .orange) }
                 if let x = scan.bakeSlowdown, x > BuildInfo.Metrics.slowdownAlarm {
@@ -133,14 +112,6 @@ struct ScanListView: View {
                 }
             }
             HStack(spacing: 10) {
-                Button {
-                    if scan.hasRoom { planScan = scan }
-                    else { loadError = "このスキャンには room.json がありません（RoomPlan を含む撮影が必要です）" }
-                } label: {
-                    Label("平面図", systemImage: "square.dashed")
-                }
-                .buttonStyle(.bordered)
-                .disabled(!scan.hasRoom)
 
                 Button {
                     if scan.hasUSDZ { quickLookURL = scan.usdzURL }
