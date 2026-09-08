@@ -47,15 +47,36 @@ final class OnDeviceBaker {
     }
 
     struct Timings {
+        /// **壁時計。アプリが停止されている間も進む。**
+        ///
+        /// バックグラウンドに回るとプロセスは約 30 秒で停止され、その間
+        /// 計算は進まないが壁時計は進む。`cpu` と比べれば分かる。
         var unwrap: TimeInterval = 0
         var rasterize: TimeInterval = 0
         var project: TimeInterval = 0
         var resolve: TimeInterval = 0
+        /// 焼き込み全体で実際に使った CPU 時間（全スレッド合計）。
+        ///
+        /// **壁時計と比べるためにある。** xatlas は複数スレッドを使うので
+        /// 通常は壁時計より大きくなる。**壁時計を大きく下回っていれば、
+        /// その差はアプリが停止されていた時間**（アプリを離れた）。
+        var cpu: TimeInterval = 0
 
         var summary: String {
-            String(format: "展開 %.1f / ラスタ %.1f / 投影 %.1f / 解決 %.1f",
-                   unwrap, rasterize, project, resolve)
+            String(format: "展開 %.1f / ラスタ %.1f / 投影 %.1f / 解決 %.1f / CPU %.1f",
+                   unwrap, rasterize, project, resolve, cpu)
         }
+    }
+
+    /// プロセスが使った CPU 時間（ユーザ + システム、全スレッド合計）。
+    ///
+    /// **停止されている間は進まない。** 壁時計との差でアプリの離脱を検出する。
+    static func processCPUSeconds() -> TimeInterval {
+        var usage = rusage()
+        guard getrusage(RUSAGE_SELF, &usage) == 0 else { return 0 }
+        let u = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1e6
+        let s = Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1e6
+        return u + s
     }
 
     enum BakeError: LocalizedError {
@@ -113,6 +134,7 @@ final class OnDeviceBaker {
         progress: ((Int, Int) -> Void)? = nil
     ) throws -> Result {
         let start = CFAbsoluteTimeGetCurrent()
+        let cpuStart = OnDeviceBaker.processCPUSeconds()
         var timings = Timings()
         var mark = start
         func lap() -> TimeInterval {
@@ -209,6 +231,7 @@ final class OnDeviceBaker {
             if w[i] > 0 { filled += 1 }
         }
 
+        timings.cpu = OnDeviceBaker.processCPUSeconds() - cpuStart
         return Result(
             vertices: vertices, uvs: uvs, indices: indices,
             texture: texture, atlasSize: atlasSize,

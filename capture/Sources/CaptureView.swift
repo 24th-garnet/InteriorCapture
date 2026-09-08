@@ -154,6 +154,14 @@ struct CaptureView: View {
             }
         case .finishing:
             VStack(spacing: 8) {
+                // **離れると計算が止まる。** iOS はバックグラウンドのプロセスを
+                // 約 30 秒で停止し、やがて終了させる。壁時計は進むので記録上は
+                // 「異常に遅い焼き込み」に見え、実測で 3 回は成果物が出ないまま
+                // プロセスが入れ替わっていた。
+                Label("このまま画面を開いたままにしてください", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+                Text("他のアプリに切り替えると処理が止まり、やり直しになります")
+                    .font(.caption2).foregroundStyle(.secondary)
                 if let p = capture.bakeProgress {
                     ProgressView(value: p) {
                         Text("テクスチャを焼き込み中")

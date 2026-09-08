@@ -86,6 +86,44 @@ final class CaptureSession: NSObject, ObservableObject {
     /// manifest に残す world 座標の揃え方。
     private let appliedAlignment = "gravity"
 
+    // MARK: 離脱の検出
+    //
+    // **焼き込み中にアプリを離れると計算が止まる。** iOS はバックグラウンドの
+    // プロセスを約 30 秒で停止し、やがて終了させる。壁時計は進むので、記録上は
+    // 「異常に遅い焼き込み」に見える。実測で 3 回、bake.json が出ないまま
+    // プロセスが入れ替わっていた。
+    //
+    // 停止された時間を数えて bake.json に残し、UI でも離れないよう伝える。
+
+    /// 焼き込み中である。UI が警告を出すために使う。
+    @Published private(set) var isBaking = false
+    private var backgroundEvents = 0
+    private var backgroundSeconds: Double = 0
+    private var backgroundEnteredAt: TimeInterval?
+    private var observers: [NSObjectProtocol] = []
+
+    private func watchBackgroundTransitions() {
+        guard observers.isEmpty else { return }
+        let nc = NotificationCenter.default
+        observers.append(nc.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil, queue: nil) { [weak self] _ in
+                self?.queue.async {
+                    self?.backgroundEvents += 1
+                    self?.backgroundEnteredAt = CFAbsoluteTimeGetCurrent()
+                }
+            })
+        observers.append(nc.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil, queue: nil) { [weak self] _ in
+                self?.queue.async {
+                    guard let self, let t = self.backgroundEnteredAt else { return }
+                    self.backgroundSeconds += CFAbsoluteTimeGetCurrent() - t
+                    self.backgroundEnteredAt = nil
+                }
+            })
+    }
+
     /// 焼き込み用のフレーム保持と GPU 実装。撮影と並行して溜める。
     private let encoder = ImageEncoder()
     private var frameStore: FrameStore?
@@ -121,6 +159,7 @@ final class CaptureSession: NSObject, ObservableObject {
             )
         }
 
+        watchBackgroundTransitions()
         let config = makeConfiguration(report)
         DispatchQueue.main.async { self.probe = report }
 
@@ -343,7 +382,17 @@ extension CaptureSession {
         }
         guard vertices.count > 2, indices.count > 2 else { return }
 
-        publish { $0.bakeProgress = 0 }
+        publish { $0.bakeProgress = 0; $0.isBaking = true }
+        backgroundEvents = 0
+        backgroundSeconds = 0
+        backgroundEnteredAt = nil
+        // バックグラウンドでも少しだけ猶予をもらう。恒久的な解決にはならない
+        // （iOS が与えるのは数十秒）が、切り替えた直後に殺されるのは防げる。
+        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "bake")
+        defer {
+            if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) }
+            publish { $0.isBaking = false }
+        }
         do {
             let result = try MainActor.assumeIsolatedSafely {
                 try baker.bake(meshVertices: vertices, meshIndices: indices, frames: frames) { n, total in
@@ -374,6 +423,14 @@ extension CaptureSession {
                     "project": result.timings.project,
                     "resolve": result.timings.resolve,
                 ],
+                // **壁時計と CPU 時間の両方を残す。**
+                // バックグラウンドに回るとプロセスは停止され、計算は進まないが
+                // 壁時計は進む。CPU が壁時計を大きく下回っていれば、その差は
+                // アプリを離れていた時間。xatlas は複数スレッドを使うので、
+                // 離れていなければ CPU > 壁時計 になるのが正常。
+                "cpu_sec": result.timings.cpu,
+                "background_events": self.backgroundEvents,
+                "background_sec": self.backgroundSeconds,
                 "triangles": result.indices.count / 3,
                 "vertices": result.vertices.count,
                 "atlas_size": result.atlasSize,
