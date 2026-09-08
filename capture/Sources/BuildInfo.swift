@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// ビルドと実行環境の素性。**性能を語る前に構成を記録する。**
 ///
@@ -30,6 +31,34 @@ enum BuildInfo {
     /// `Metrics.unwrapMicrosecondsPerTriangle` で判断する。
     static let xatlasFlags = "-w -O2"
 
+    /// 低電力モード。**CPU/GPU のクロックを大きく下げる。**
+    ///
+    /// `thermalState` はこれを反映しない（低電力でも `nominal` のまま）ので、
+    /// 熱を否定しても絞られている可能性が残る。**性能を語るなら必ず記録する。**
+    static var isLowPowerMode: Bool { ProcessInfo.processInfo.isLowPowerModeEnabled }
+
+    /// 電池残量（0.0〜1.0）。取得できなければ nil。
+    ///
+    /// iOS は残量が少ないと低電力モードを促し、有効化すると性能を落とす。
+    /// 実測で残量 5% のときに焼き込みが 200 秒級だった。
+    static var batteryLevel: Float? {
+        if !UIDevice.current.isBatteryMonitoringEnabled {
+            UIDevice.current.isBatteryMonitoringEnabled = true
+        }
+        let l = UIDevice.current.batteryLevel
+        return l < 0 ? nil : l
+    }
+
+    static var batteryStateName: String {
+        switch UIDevice.current.batteryState {
+        case .unplugged: return "unplugged"
+        case .charging: return "charging"
+        case .full: return "full"
+        case .unknown: return "unknown"
+        @unknown default: return "unknown"
+        }
+    }
+
     static var thermalStateName: String {
         switch ProcessInfo.processInfo.thermalState {
         case .nominal: return "nominal"
@@ -41,7 +70,10 @@ enum BuildInfo {
     }
 
     static var summary: String {
-        "build: \(configuration)  xatlas: \(xatlasFlags)  thermal: \(thermalStateName)"
+        let batt = batteryLevel.map { String(format: "%.0f%%", $0 * 100) } ?? "?"
+        return "build: \(configuration)  xatlas: \(xatlasFlags)"
+            + "  thermal: \(thermalStateName)  lowPower: \(isLowPowerMode)"
+            + "  battery: \(batt) \(batteryStateName)"
     }
 
     /// 焼き込みが遅いかを**構成の記憶に頼らず**判断するための指標。

@@ -452,6 +452,12 @@ extension CaptureSession {
                 "build_configuration": BuildInfo.configuration,
                 "xatlas_flags": BuildInfo.xatlasFlags,
                 "thermal_state": BuildInfo.thermalStateName,
+                // **低電力モードは thermalState に出ない。** クロックを大きく
+                // 下げるので、熱を否定しても絞られている可能性が残る。
+                // 実測で残量 5% のときに焼き込みが 200 秒級だった。
+                "low_power_mode": BuildInfo.isLowPowerMode,
+                "battery_level": BuildInfo.batteryLevel ?? -1,
+                "battery_state": BuildInfo.batteryStateName,
                 // 面数はスキャンごとに変わるので、秒数だけでは速いか遅いか
                 // 分からない。面で割った値が構成に依存しない検出指標になる。
                 "unwrap_us_per_triangle": BuildInfo.Metrics.unwrapMicrosecondsPerTriangle(
