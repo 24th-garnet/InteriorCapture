@@ -27,6 +27,23 @@ final class OnDeviceBaker {
         /// UV 展開 35% / 投影 64% だったが、iPad は投影を Metal で回すぶん
         /// 比率が違うはず。移植版の数字で iOS の設計を決めてはいけない。
         let timings: Timings
+        /// 展開の内訳。原因の切り分け用。
+        let unwrapDetail: UnwrapDetail
+    }
+
+    /// 展開の内訳。**端末で段階を知るため。** Mac では ComputeCharts が
+    /// 支配的だが、端末は同じ入力の変化で 12.8 倍になった。計算量か
+    /// メモリ逼迫かを切り分ける。
+    struct UnwrapDetail {
+        var addMesh: Double = 0
+        var computeCharts: Double = 0
+        var packCharts: Double = 0
+        var buildOutput: Double = 0
+        var charts: Int = 0
+        var hardwareConcurrency: Int = 0
+        var availableMemoryBefore: UInt64 = 0
+        var availableMemoryAfter: UInt64 = 0
+        var availableMemoryMin: UInt64 = 0
     }
 
     struct Timings {
@@ -119,6 +136,17 @@ final class OnDeviceBaker {
             }
         }) else { throw BakeError.unwrapFailed }
 
+        let detail = UnwrapDetail(
+            addMesh: atlas.addMeshSec,
+            computeCharts: atlas.computeChartsSec,
+            packCharts: atlas.packChartsSec,
+            buildOutput: atlas.buildOutputSec,
+            charts: Int(atlas.chartCount),
+            hardwareConcurrency: Int(atlas.hardwareConcurrency),
+            availableMemoryBefore: atlas.availableMemoryBefore,
+            availableMemoryAfter: atlas.availableMemoryAfter,
+            availableMemoryMin: atlas.availableMemoryMin)
+
         // **xatlas は resolution を上限ではなく目安として扱う。**
         // 2048 を要求しても 2367x2361 のような大きさを返す（実測）。
         // 要求値でテクスチャを作ると、チャートの配置とテクセルが対応せず
@@ -186,7 +214,8 @@ final class OnDeviceBaker {
             texture: texture, atlasSize: atlasSize,
             unfilledRatio: validCount > 0 ? 1 - Float(filled) / Float(validCount) : 1,
             elapsed: CFAbsoluteTimeGetCurrent() - start,
-            timings: timings
+            timings: timings,
+            unwrapDetail: detail
         )
     }
 

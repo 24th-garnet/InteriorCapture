@@ -390,6 +390,24 @@ extension CaptureSession {
                 "unwrap_us_per_triangle": BuildInfo.Metrics.unwrapMicrosecondsPerTriangle(
                     unwrapSec: result.timings.unwrap,
                     triangles: result.indices.count / 3) ?? 0,
+                // 展開の内訳。**計算量かメモリ逼迫かを切り分けるため。**
+                // Mac では ComputeCharts が支配的（148,897 面 7.19 秒 /
+                // 192,403 面 13.66 秒）なのに、端末は 13.91 -> 178.41 秒
+                // （12.8 倍）になった。段階と残メモリが分かれば決まる。
+                "unwrap_detail": [
+                    "add_mesh_sec": result.unwrapDetail.addMesh,
+                    "compute_charts_sec": result.unwrapDetail.computeCharts,
+                    "pack_charts_sec": result.unwrapDetail.packCharts,
+                    "build_output_sec": result.unwrapDetail.buildOutput,
+                    "charts": result.unwrapDetail.charts,
+                    "hardware_concurrency": result.unwrapDetail.hardwareConcurrency,
+                    "available_memory_before_mb":
+                        Double(result.unwrapDetail.availableMemoryBefore) / 1e6,
+                    "available_memory_after_mb":
+                        Double(result.unwrapDetail.availableMemoryAfter) / 1e6,
+                    "available_memory_min_mb":
+                        Double(result.unwrapDetail.availableMemoryMin) / 1e6,
+                ],
             ]
             if let data = try? JSONSerialization.data(withJSONObject: stats,
                                                       options: [.prettyPrinted, .sortedKeys]) {

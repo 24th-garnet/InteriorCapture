@@ -1,5 +1,37 @@
 #import "XAtlasBridge.h"
 #include "xatlas.h"
+#include <os/proc.h>
+#include <thread>
+#include <mach/mach_time.h>
+
+// 段階ごとの時間と残メモリ。xatlas の進捗コールバックは任意のスレッドから
+// 呼ばれるが、ここで触るのは単調増加の観測値だけなので素朴に書く。
+namespace {
+struct Probe {
+    double start[4] = {-1, -1, -1, -1};
+    double end[4] = {0, 0, 0, 0};
+    uint64_t minAvail = UINT64_MAX;
+    double t0 = 0;
+};
+
+double nowSec() {
+    static mach_timebase_info_data_t tb;
+    if (tb.denom == 0) mach_timebase_info(&tb);
+    return (double)mach_absolute_time() * tb.numer / tb.denom / 1e9;
+}
+
+bool onProgress(xatlas::ProgressCategory cat, int pct, void *user) {
+    Probe *p = (Probe *)user;
+    int i = (int)cat;
+    if (i < 0 || i > 3) return true;
+    double t = nowSec() - p->t0;
+    if (p->start[i] < 0) p->start[i] = t;
+    p->end[i] = t;
+    uint64_t avail = os_proc_available_memory();
+    if (avail > 0 && avail < p->minAvail) p->minAvail = avail;
+    return true;
+}
+}  // namespace
 #include <vector>
 #include <cmath>
 
@@ -15,8 +47,19 @@
                      chartCount:(NSUInteger)chartCount
                           width:(NSUInteger)width
                          height:(NSUInteger)height
-                     atlasCount:(NSUInteger)atlasCount {
+                     atlasCount:(NSUInteger)atlasCount
+                          probe:(const Probe &)probe
+                availableBefore:(uint64_t)availableBefore
+                 availableAfter:(uint64_t)availableAfter {
     if ((self = [super init])) {
+        _addMeshSec = probe.start[0] < 0 ? 0 : probe.end[0] - probe.start[0];
+        _computeChartsSec = probe.start[1] < 0 ? 0 : probe.end[1] - probe.start[1];
+        _packChartsSec = probe.start[2] < 0 ? 0 : probe.end[2] - probe.start[2];
+        _buildOutputSec = probe.start[3] < 0 ? 0 : probe.end[3] - probe.start[3];
+        _hardwareConcurrency = std::thread::hardware_concurrency();
+        _availableMemoryBefore = availableBefore;
+        _availableMemoryAfter = availableAfter;
+        _availableMemoryMin = probe.minAvail == UINT64_MAX ? 0 : probe.minAvail;
         _mapping = std::move(mapping);
         _indices = std::move(indices);
         _uvs = std::move(uvs);
@@ -48,7 +91,12 @@
     };
     if (vertexCount == 0 || indexCount == 0) return nil;
 
+    Probe probe;
+    probe.t0 = nowSec();
+    const uint64_t availBefore = os_proc_available_memory();
+
     xatlas::Atlas *atlas = xatlas::Create();
+    xatlas::SetProgressCallback(atlas, onProgress, &probe);
 
     xatlas::MeshDecl decl;
     decl.vertexCount = (uint32_t)vertexCount;
@@ -125,12 +173,16 @@
     NSUInteger aw = atlas->width, ah = atlas->height, ac = atlas->atlasCount;
 
     xatlas::Destroy(atlas);
+    const uint64_t availAfter = os_proc_available_memory();
     return [[MDRAtlasResult alloc] initWithMapping:std::move(mapping)
                                            indices:std::move(outIndices)
                                                uvs:std::move(uvs)
                                         chartCount:charts
                                              width:aw
                                             height:ah
-                                        atlasCount:ac];
+                                        atlasCount:ac
+                                             probe:probe
+                                   availableBefore:availBefore
+                                    availableAfter:availAfter];
 }
 @end
