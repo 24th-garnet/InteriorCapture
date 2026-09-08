@@ -249,12 +249,22 @@ final class CaptureSession: NSObject, ObservableObject {
                                   worldAlignment: self.appliedAlignment)
                 let url = writer.bundleURL
 
-                // RoomPlan の確定処理。焼き込みより先に投げて並行させる。
-                // 焼き込みは 97% が UV 展開の CPU 処理、RoomBuilder は ML なので
-                // 資源が競合しにくく、待ち時間の大半が隠れる。
+                // RoomPlan は**止めるだけ**。`RoomBuilder` は回さない。
+                //
+                // 以前は焼き込みと並行させていた（「ML なので競合しにくい」
+                // という想定）。実測でそれは誤りだった。room-428768ea は
+                // 壁時計 202.5 秒に対しプロセスの CPU 時間 1077 秒で、
+                // 残メモリ 3.3GB・温度 nominal・離脱 0 秒。xatlas の
+                // スケジューラがタスクごとに全ワーカを起こし、待機は
+                // `yield()` のスピンなので、コアを取り合うと空回りが爆発する。
+                //
+                // 端末側は最速の 3D 生成と最低限の RoomPlan 撮影だけを担い、
+                // 精細化と間取り図はサーバ側（M1 Max）に寄せる。
                 if #available(iOS 17.0, *), let scan = self.typedRoomScan {
                     Task { @MainActor in
-                        if let room = await scan.finish() {
+                        let room = await scan.finish()
+                        scan.writeRawData(to: url)
+                        if let room {
                             scan.write(room, to: url)
                             self.roomWalls = room.walls.count
                             self.roomObjects = room.objects.count

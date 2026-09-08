@@ -89,7 +89,21 @@ final class RoomScan {
         }
     }
 
-    /// 停止して最終結果を返す。`RoomBuilder` は数秒かかる。
+    /// セッションを止め、**`RoomBuilder` を回さずに**その場の結果を返す。
+    ///
+    /// なぜ回さないか
+    /// -------------
+    /// 端末側は「最速の 3D 生成」と「必要最低限の RoomPlan 撮影」だけを担う。
+    /// `RoomBuilder(options: [.beautifyObjects])` は焼き込みと同時に走っていたが、
+    /// xatlas のタスクスケジューラは**タスクごとに全ワーカを起こし**（`run`）、
+    /// **待機は `std::this_thread::yield()` のスピン**（`wait`）なので、
+    /// コアを取り合うと空回りが爆発する。実測（room-428768ea）で
+    /// 壁時計 202.5 秒に対しプロセスの CPU 時間が **1077 秒**、
+    /// 残メモリ 3.3GB・温度 nominal・離脱 0 秒。**計算ではなく空回り。**
+    ///
+    /// 精細化（beautify）と間取り図はサーバ側（M1 Max）で行う。
+    /// ここでは撮影中に `didUpdate` で受け取った `CapturedRoom` をそのまま使い、
+    /// 後から精細化できるよう生データ（`CapturedRoomData`）も残す。
     ///
     /// ARSession は止めない（`pauseARSession: false`）。MDR の焼き込みが
     /// メッシュとフレームを使うので、こちらの都合で落としてはいけない。
@@ -101,17 +115,28 @@ final class RoomScan {
         }
         roomSession = nil
         delegateBox = nil
+        capturedData = data
+        return latestRoom
+    }
 
-        guard let data else { return latestRoom }
+    /// `RoomBuilder` に渡せる生データ。精細化を後回しにするために保持する。
+    private(set) var capturedData: CapturedRoomData?
+
+    /// 生データをバンドルに残す。**あとで精細化できるようにするため。**
+    ///
+    /// `CapturedRoomData` は `Codable`。`RoomPlan` は iOS 専用なので
+    /// 精細化そのものは端末でしか走らないが、**撮影の流れから外す**ことで
+    /// 焼き込みと取り合わなくなる。
+    @discardableResult
+    func writeRawData(to bundleURL: URL) -> Bool {
+        guard let data = capturedData else { return false }
+        guard let encoded = try? JSONEncoder().encode(data) else { return false }
         do {
-            let room = try await RoomBuilder(options: [.beautifyObjects])
-                .capturedRoom(from: data)
-            latestRoom = room
-            return room
+            try encoded.write(to: bundleURL.appendingPathComponent("room_raw.json"))
+            return true
         } catch {
             lastError = error.localizedDescription
-            // 途中の didUpdate で受け取った部屋は使える。完全に失うより良い。
-            return latestRoom
+            return false
         }
     }
 

@@ -186,14 +186,10 @@ struct CaptureView: View {
                 }
                 Text("ファイル App の「このiPad内」から Mac にコピーしてください")
                     .font(.caption2).foregroundStyle(.secondary)
-                HStack(spacing: 10) {
-                    // 平面図はメッシュを使わないので、焼き込みを待たずに出せる。
-                    if #available(iOS 17.0, *), capture.roomReady {
-                        Button("平面図を確認") { showPlan = true }
-                            .buttonStyle(.borderedProminent)
-                    }
-                    Button("閉じる") { capture.acknowledge() }.buttonStyle(.bordered)
-                }
+                // **撮影の流れは撮影 → 焼き込み → 終了だけにする。**
+                // 平面図の確認と訂正は「過去のスキャン」から開く。端末側で
+                // 撮影直後に余計な処理を挟むと、焼き込みと資源を取り合う。
+                Button("閉じる") { capture.acknowledge() }.buttonStyle(.borderedProminent)
             }
             .padding()
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
