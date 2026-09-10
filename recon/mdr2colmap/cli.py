@@ -14,10 +14,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
 from pathlib import Path
 
-from . import coords, floorplan, roomplan, segment, verify
+from . import coords, floorplan, roomplan, segment, texture, verify
 from .mdr import Bundle, MDRError
 from .mesh import read_ply_mesh
 
@@ -247,6 +249,68 @@ def cmd_arrange(args: argparse.Namespace) -> int:
 
 
 
+def cmd_texture(args: argparse.Namespace) -> int:
+    """サーバ側で高精度にテクスチャを焼き直す。
+
+    端末側は速さのために色を頂点に持たせる（`BakeMode.vertexColor`、数秒）。
+    見た目の劣化は避けられないので、**同じバンドルから焼き直して精度を上げる**。
+
+    端末に対する優位はすべてバンドルに入っている:
+
+    - **フル解像度のフレーム**（1920x1440）。端末は焼き込み用に 960x720 へ縮小
+      してメモリに持つが、バンドルには元の JPEG がある
+    - **全フレーム**。端末は保持上限（250 枚）で間引くが、バンドルは採用した
+      全枚数を持つ
+    - **大きなアトラス**。時間の制約がないので 4096 でも通る
+    """
+    bundle_path = Path(args.bundle)
+    mesh_path = bundle_path / "mesh.ply"
+    if not mesh_path.exists():
+        print(f"エラー: mesh.ply がありません: {mesh_path}", file=sys.stderr)
+        return 2
+
+    bundle = Bundle(bundle_path)
+    mesh = read_ply_mesh(mesh_path)
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+
+    print(f"メッシュ {len(mesh.vertices):,} 頂点 / {len(mesh.faces):,} 面")
+    print(f"フレーム {len(bundle.frames):,} 枚"
+          f"（{bundle.manifest.video_wh[0]}x{bundle.manifest.video_wh[1]}）"
+          + (f" -> {args.max_frames} 枚に間引く" if args.max_frames else ""))
+    print(f"アトラス {args.size}")
+
+    started = time.time()
+    tm = texture.bake(
+        bundle, mesh,
+        size=args.size,
+        conf_min=_resolve_conf_min(bundle, args.conf_min),
+        max_frames=args.max_frames,
+        view_exponent=args.view_exponent,
+        progress=_progress("焼き込み"),
+    )
+    elapsed = time.time() - started
+
+    glb = out / "mesh_hq.glb"
+    texture.to_glb(tm, glb)
+    report = {
+        "elapsed_sec": round(elapsed, 2),
+        "atlas_size": int(tm.texture.shape[0]),
+        "vertices": int(len(tm.vertices)),
+        "triangles": int(len(tm.faces)),
+        "frames": len(bundle.frames) if not args.max_frames
+        else min(args.max_frames, len(bundle.frames)),
+        "video_wh": list(bundle.manifest.video_wh),
+        "unfilled_ratio": round(float(tm.unfilled_ratio), 5),
+    }
+    (out / "texture_hq.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    print(f"\n{elapsed:.1f} 秒  未着色 {tm.unfilled_ratio * 100:.1f}%"
+          f"  アトラス {tm.texture.shape[0]}")
+    print(f"出力: {glb}, {out / 'texture_hq.json'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="mdr2colmap",
@@ -276,6 +340,19 @@ def main(argv: list[str] | None = None) -> int:
     fp.add_argument("bundle", help=".mdr ディレクトリ")
     fp.add_argument("-o", "--output", default=".", help="SVG/DXF の出力先")
     fp.set_defaults(func=cmd_floorplan)
+
+    tx = sub.add_parser("texture", help="サーバ側で高精度にテクスチャを焼き直す")
+    tx.add_argument("bundle", help=".mdr ディレクトリ")
+    tx.add_argument("-o", "--output", default="texture_hq", help="出力先")
+    tx.add_argument("--size", type=int, default=4096,
+                    help="アトラスの一辺。端末は 2048 相当。既定 4096")
+    tx.add_argument("--max-frames", type=int, default=None,
+                    help="使うフレーム数の上限。既定は全部")
+    tx.add_argument("--conf-min", type=int, default=None,
+                    help="採用する深度信頼度の下限。既定は実データの最大値")
+    tx.add_argument("--view-exponent", type=float, default=2.0,
+                    help="大きいほど最良の 1 視点に寄り鮮鋭になる")
+    tx.set_defaults(func=cmd_texture)
 
     ar = sub.add_parser("arrange", help="RoomPlan の箱で家具を切り分け、動かす")
     ar.add_argument("bundle", help="MDR バンドル（room.json と mesh.ply を含む）")
