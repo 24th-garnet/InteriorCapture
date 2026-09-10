@@ -20,7 +20,15 @@ targets:
         # （room-33d49373 の 148,897 面で -O0 49.62 秒 / -O2 7.68 秒）。
         # 外部の数値コードを段階実行することはないので、最適化を落とす利点がない。
         # 構成ごとの設定より後に付くので、こちらが勝つ。
-        compilerFlags: "-w -O2"
+        #
+        # **`-DXA_MULTITHREADED=0` で単一スレッド版にする。**
+        # マルチスレッド版の `TaskScheduler::wait` は
+        # `while (group.ref > 0) std::this_thread::yield();` のスピン待機で、
+        # 実測で CPU 1490 秒 / 壁時計 249 秒（6 コア常時稼働）のうち、
+        # 実作業は Mac 換算 80 CPU 秒程度。**約 95% が空回り**だった。
+        # 単一スレッド版は `wait()` がキューを順に実行するだけで、
+        # スレッド・条件変数・スピンがない。出力（チャート分割・UV）は同一。
+        compilerFlags: "-w -O2 -DXA_MULTITHREADED=0"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.garnet.madoriba.capture
