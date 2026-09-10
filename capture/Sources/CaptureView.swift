@@ -125,6 +125,17 @@ struct CaptureView: View {
     private var controls: some View {
         switch capture.state {
         case .idle:
+            // 焼き込み方式。**頂点カラーは UV 展開を省くので数秒で終わる。**
+            Picker("", selection: Binding(
+                get: { capture.bakeMode },
+                set: { capture.bakeMode = $0 }
+            )) {
+                ForEach(CaptureSession.BakeMode.allCases, id: \.self) {
+                    Text($0.rawValue).tag($0)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 420)
             recordButton(title: "録画開始", color: .red) { capture.startRecording() }
         case .recording:
             VStack(spacing: 8) {

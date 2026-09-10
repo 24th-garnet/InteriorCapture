@@ -91,7 +91,10 @@ struct ScanListView: View {
             }
             if let e = scan.bakeElapsedSec, let u = scan.bakeUnwrapSec {
                 label(String(format: "焼き込み %.1f 秒（展開 %.1f）", e, u)
+                      + (scan.vertexColorSec.map { String(format: "　頂点色 %.1f 秒", $0) } ?? "")
                       + (scan.bakeThermal.map { "　温度 \($0)" } ?? ""))
+            } else if let v = scan.vertexColorSec {
+                label(String(format: "頂点色 %.1f 秒", v))
             }
             HStack(spacing: 8) {
                 if let n = scan.frameCount {
@@ -121,6 +124,15 @@ struct ScanListView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(!scan.hasUSDZ)
+
+                if scan.hasVertexColorUSDZ {
+                    Button {
+                        quickLookURL = scan.vertexColorUSDZURL
+                    } label: {
+                        Label("3D 頂点色", systemImage: "cube.transparent")
+                    }
+                    .buttonStyle(.bordered)
+                }
 
                 Spacer()
                 Button(role: .destructive) { deleting = scan } label: {

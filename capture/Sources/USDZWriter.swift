@@ -204,3 +204,57 @@ enum USDZArchive {
         return c ^ 0xFFFF_FFFF
     }
 }
+
+// MARK: - 頂点カラー版
+//
+// **UV 展開を省いた経路の出力。** テクスチャが無いので ZIP に入れるのは
+// usda 1 つだけ。色は `primvars:displayColor` を頂点補間で持たせる。
+// `UsdPreviewSurface` の diffuseColor に接続はできない（primvar は
+// シェーダ入力ではない）ので、**マテリアルを付けずに displayColor を使う**。
+// Quick Look はこれを解釈する。
+
+extension USDZWriter {
+
+    static func writeVertexColors(
+        vertices: [SIMD3<Float>],
+        colors: [SIMD3<UInt8>],
+        indices: [UInt32],
+        to url: URL
+    ) throws {
+        precondition(vertices.count == colors.count)
+        var points = ""; points.reserveCapacity(vertices.count * 28)
+        for v in vertices { points += "(\(v.x), \(v.y), \(v.z)), " }
+        // displayColor は 0..1 の linear。焼き込みは sRGB のバイト値なので割るだけ。
+        var cols = ""; cols.reserveCapacity(colors.count * 24)
+        for c in colors {
+            cols += "(\(Float(c.x) / 255), \(Float(c.y) / 255), \(Float(c.z) / 255)), "
+        }
+        var idx = ""; idx.reserveCapacity(indices.count * 7)
+        for i in indices { idx += "\(i), " }
+        let counts = String(repeating: "3, ", count: indices.count / 3)
+
+        let usda = """
+        #usda 1.0
+        (
+            defaultPrim = "Room"
+            metersPerUnit = 1
+            upAxis = "Y"
+        )
+
+        def Xform "Room"
+        {
+            def Mesh "mesh"
+            {
+                uniform bool doubleSided = 1
+                int[] faceVertexCounts = [\(counts.dropLast(2))]
+                int[] faceVertexIndices = [\(idx.dropLast(2))]
+                point3f[] points = [\(points.dropLast(2))]
+                color3f[] primvars:displayColor = [\(cols.dropLast(2))] (
+                    interpolation = "vertex"
+                )
+            }
+        }
+        """
+        try USDZArchive.write(entries: [("model.usda", Data(usda.utf8))], to: url)
+    }
+}

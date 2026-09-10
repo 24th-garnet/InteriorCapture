@@ -101,6 +101,8 @@ final class OnDeviceBaker {
     private let bakeFrame: MTLComputePipelineState
     private let resolve: MTLComputePipelineState
     private let dilate: MTLComputePipelineState
+    fileprivate let bakeVertexPipeline: MTLComputePipelineState
+    fileprivate let resolveVertexPipeline: MTLComputePipelineState
 
     init() throws {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -118,6 +120,92 @@ final class OnDeviceBaker {
         bakeFrame = try pipeline("bakeFrame")
         resolve = try pipeline("resolveAtlas")
         dilate = try pipeline("dilateAtlas")
+        bakeVertexPipeline = try pipeline("bakeFrameVertex")
+        resolveVertexPipeline = try pipeline("resolveVertexColors")
+    }
+
+    /// 頂点カラーの焼き込み結果。
+    struct VertexColorResult {
+        let vertices: [SIMD3<Float>]
+        let indices: [UInt32]
+        /// 頂点ごとの RGB（0..255）。
+        let colors: [SIMD3<UInt8>]
+        /// どのフレームからも見えなかった頂点の割合。
+        let unfilledRatio: Float
+        let elapsed: TimeInterval
+        let cpuSec: TimeInterval
+    }
+
+    /// **UV 展開を省いて頂点に色を焼く。**
+    ///
+    /// 展開（xatlas の ComputeCharts）はこの端末で焼き込み時間の 97% を占める
+    /// （実測 55 秒のうち 54.5 秒）。色を頂点に持たせればアトラスが要らなくなり、
+    /// 投影だけで済む。代償は色の解像度がメッシュの辺の長さ（実測で約 2cm）に
+    /// 落ちること。テクスチャ版は 4.7mm/テクセルだった。
+    ///
+    /// アトラス版と違い**未着色を近傍から埋められない**（近傍の概念がない）。
+    /// 見えなかった頂点は灰色になる。
+    func bakeVertexColors(
+        meshVertices: [SIMD3<Float>],
+        meshIndices: [UInt32],
+        frames: [BakedFrame],
+        viewExponent: Float = 8.0,
+        progress: ((Int, Int) -> Void)? = nil
+    ) throws -> VertexColorResult {
+        let start = CFAbsoluteTimeGetCurrent()
+        let cpuStart = OnDeviceBaker.processCPUSeconds()
+        let count = meshVertices.count
+        guard count > 0, meshIndices.count >= 3 else { throw BakeError.unwrapFailed }
+
+        // 頂点法線。面法線を面積重みで足す（大きい面の向きを尊重する）。
+        var normals = [SIMD3<Float>](repeating: .zero, count: count)
+        for t in stride(from: 0, to: meshIndices.count - 2, by: 3) {
+            let a = Int(meshIndices[t]), b = Int(meshIndices[t + 1]), c = Int(meshIndices[t + 2])
+            let n = simd_cross(meshVertices[b] - meshVertices[a],
+                               meshVertices[c] - meshVertices[a])
+            normals[a] += n; normals[b] += n; normals[c] += n
+        }
+        for i in 0..<count {
+            let l = simd_length(normals[i])
+            normals[i] = l > 1e-12 ? normals[i] / l : SIMD3<Float>(0, 1, 0)
+        }
+
+        guard let posBuf = device.makeBuffer(bytes: meshVertices,
+                                             length: count * MemoryLayout<SIMD3<Float>>.stride,
+                                             options: .storageModeShared),
+              let nrmBuf = device.makeBuffer(bytes: normals,
+                                             length: count * MemoryLayout<SIMD3<Float>>.stride,
+                                             options: .storageModeShared),
+              let accumBuf = device.makeBuffer(length: count * 12, options: .storageModeShared),
+              let weightBuf = device.makeBuffer(length: count * 4, options: .storageModeShared),
+              let colBuf = device.makeBuffer(length: count * 4, options: .storageModeShared)
+        else { throw BakeError.metalUnavailable }
+        zero(accumBuf, length: count * 12)
+        zero(weightBuf, length: count * 4)
+
+        let sharpnessMedian = median(frames.map { $0.sharpness })
+        for (n, frame) in frames.enumerated() {
+            runBakeVertex(frame: frame, count: count,
+                          positions: posBuf, normals: nrmBuf,
+                          accum: accumBuf, weight: weightBuf,
+                          viewExponent: viewExponent,
+                          sharpness: max(frame.sharpness / max(sharpnessMedian, 1e-6), 0.05))
+            progress?(n + 1, frames.count)
+        }
+        runResolveVertex(accum: accumBuf, weight: weightBuf, out: colBuf, count: count)
+
+        let raw = colBuf.contents().assumingMemoryBound(to: UInt8.self)
+        var colors = [SIMD3<UInt8>](repeating: .zero, count: count)
+        var filled = 0
+        for i in 0..<count {
+            colors[i] = SIMD3(raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2])
+            if raw[i * 4 + 3] != 0 { filled += 1 }
+        }
+        return VertexColorResult(
+            vertices: meshVertices, indices: meshIndices, colors: colors,
+            unfilledRatio: 1 - Float(filled) / Float(count),
+            elapsed: CFAbsoluteTimeGetCurrent() - start,
+            cpuSec: OnDeviceBaker.processCPUSeconds() - cpuStart)
     }
 
     /// - Parameters:
@@ -389,5 +477,56 @@ extension OnDeviceBaker {
             swap(&src, &dst)
         }
         return Data(bytes: src.contents(), count: texels * 4)
+    }
+}
+
+// MARK: - 頂点カラーの GPU ディスパッチ
+
+extension OnDeviceBaker {
+
+    fileprivate func runBakeVertex(
+        frame: BakedFrame, count: Int,
+        positions: MTLBuffer, normals: MTLBuffer,
+        accum: MTLBuffer, weight: MTLBuffer,
+        viewExponent: Float, sharpness: Float
+    ) {
+        // `atlasSize` を頂点数として渡す（専用 uniform を増やさない）。
+        var u = BakeUniforms(
+            worldToCamera: frame.worldToCamera,
+            fx: frame.fx, fy: frame.fy, cx: frame.cx, cy: frame.cy,
+            videoWidth: UInt32(frame.rgb.width), videoHeight: UInt32(frame.rgb.height),
+            depthWidth: UInt32(frame.depth.width), depthHeight: UInt32(frame.depth.height),
+            atlasSize: UInt32(count),
+            depthTolerance: 0.08, minFacing: 0.15,
+            viewExponent: viewExponent, sharpness: sharpness,
+            confidenceMin: UInt32(ARConfidenceLevel.high.rawValue)
+        )
+        encode { enc in
+            enc.setComputePipelineState(bakeVertexPipeline)
+            enc.setTexture(frame.rgb, index: 0)
+            enc.setTexture(frame.depth, index: 1)
+            enc.setTexture(frame.confidence, index: 2)
+            enc.setBuffer(positions, offset: 0, index: 0)
+            enc.setBuffer(normals, offset: 0, index: 1)
+            enc.setBuffer(accum, offset: 0, index: 2)
+            enc.setBuffer(weight, offset: 0, index: 3)
+            enc.setBytes(&u, length: MemoryLayout<BakeUniforms>.stride, index: 4)
+            enc.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 64, height: 1, depth: 1))
+        }
+    }
+
+    fileprivate func runResolveVertex(accum: MTLBuffer, weight: MTLBuffer,
+                                      out: MTLBuffer, count: Int) {
+        var n = UInt32(count)
+        encode { enc in
+            enc.setComputePipelineState(resolveVertexPipeline)
+            enc.setBuffer(accum, offset: 0, index: 0)
+            enc.setBuffer(weight, offset: 0, index: 1)
+            enc.setBuffer(out, offset: 0, index: 2)
+            enc.setBytes(&n, length: 4, index: 3)
+            enc.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 64, height: 1, depth: 1))
+        }
     }
 }

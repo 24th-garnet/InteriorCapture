@@ -23,6 +23,7 @@ final class ScanLibrary: ObservableObject {
         var worldAlignment: String?
 
         var hasUSDZ = false        // mesh.usdz（Quick Look で開ける）
+        var hasVertexColorUSDZ = false   // mesh_vc.usdz（頂点カラー版）
         var hasGLB = false
         var hasFixes = false       // 人手の訂正が保存済み
 
@@ -43,6 +44,9 @@ final class ScanLibrary: ObservableObject {
 
 
         var usdzURL: URL { url.appendingPathComponent("mesh.usdz") }
+        var vertexColorUSDZURL: URL { url.appendingPathComponent("mesh_vc.usdz") }
+        /// 頂点カラー版の焼き込み秒数（bake.json の `vertex_color`）。
+        var vertexColorSec: Double?
 
     }
 
@@ -98,6 +102,7 @@ final class ScanLibrary: ObservableObject {
         for url in entries where url.pathExtension == "mdr" {
             var scan = Scan(url: url)
             scan.hasUSDZ = fm.fileExists(atPath: scan.usdzURL.path)
+            scan.hasVertexColorUSDZ = fm.fileExists(atPath: scan.vertexColorUSDZURL.path)
             scan.hasGLB = fm.fileExists(
                 atPath: url.appendingPathComponent("mesh.glb").path)
             scan.hasFixes = fm.fileExists(
@@ -123,6 +128,9 @@ final class ScanLibrary: ObservableObject {
                 scan.bakeThermal = b["thermal_state"] as? String
                 if let stages = b["stages_sec"] as? [String: Any] {
                     scan.bakeUnwrapSec = stages["unwrap"] as? Double
+                }
+                if let vc = b["vertex_color"] as? [String: Any] {
+                    scan.vertexColorSec = vc["elapsed_sec"] as? Double
                 }
             }
             if scan.createdAt == nil {

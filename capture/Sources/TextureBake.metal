@@ -180,3 +180,78 @@ kernel void rasterizeAtlas(device const float3 *positions [[buffer(0)]],  // 展
         }
     }
 }
+
+// MARK: - 頂点カラー
+//
+// **UV 展開（xatlas）を丸ごと省くための経路。**
+//
+// 展開はこの端末で焼き込み時間の 97%（実測 55 秒のうち 54.5 秒）を占める。
+// 色を頂点に持たせればアトラスが不要になり、投影だけで済む。
+// 色の解像度はメッシュの辺の長さ（実測で約 2cm）に落ちる。
+//
+// `atlasSize` を頂点数として使う。専用の uniform を増やさないため。
+
+kernel void bakeFrameVertex(texture2d<float, access::read>       rgb        [[texture(0)]],
+                            texture2d<float, access::read>       depth      [[texture(1)]],
+                            texture2d<uint,  access::read>       confidence [[texture(2)]],
+                            device const float3                 *positions  [[buffer(0)]],
+                            device const float3                 *normals    [[buffer(1)]],
+                            device float                        *accum      [[buffer(2)]],  // RGB * w
+                            device float                        *weight     [[buffer(3)]],
+                            constant BakeUniforms               &u          [[buffer(4)]],
+                            uint gid [[thread_position_in_grid]])
+{
+    if (gid >= u.atlasSize) return;   // atlasSize = 頂点数
+
+    float4 cam4 = u.worldToCamera * float4(positions[gid], 1.0);
+    float3 cam = cam4.xyz;
+    if (cam.z <= 0.05) return;
+
+    float uu = u.fx * cam.x / cam.z + u.cx;
+    float vv = u.fy * cam.y / cam.z + u.cy;
+    if (uu < 0 || uu >= float(u.videoWidth) || vv < 0 || vv >= float(u.videoHeight)) return;
+
+    float3 n = (u.worldToCamera * float4(normals[gid], 0.0)).xyz;
+    float3 dir = normalize(cam);
+    float facing = -dot(n, dir);
+    if (facing <= u.minFacing) return;
+
+    uint dx = min(uint(uu * float(u.depthWidth) / float(u.videoWidth)), u.depthWidth - 1);
+    uint dy = min(uint(vv * float(u.depthHeight) / float(u.videoHeight)), u.depthHeight - 1);
+    uint conf = confidence.read(uint2(dx, dy)).r;
+    if (conf < u.confidenceMin) return;
+    float measured = depth.read(uint2(dx, dy)).r;
+    if (!isfinite(measured) || fabs(measured - cam.z) >= u.depthTolerance) return;
+
+    uint ix = min(uint(uu), u.videoWidth - 1);
+    uint iy = min(uint(vv), u.videoHeight - 1);
+    float3 color = rgb.read(uint2(ix, iy)).rgb * 255.0;
+
+    // 1 頂点 1 スレッド。自分の gid にしか書かないので atomic は不要
+    // （A12Z では float の atomic 加算が保証されない）。
+    float w = pow(facing, u.viewExponent) / max(cam.z, 0.2) * u.sharpness;
+    accum[gid * 3 + 0] += color.r * w;
+    accum[gid * 3 + 1] += color.g * w;
+    accum[gid * 3 + 2] += color.b * w;
+    weight[gid] += w;
+}
+
+// 重み付き和を割って頂点カラーにする。**どのフレームからも見えなかった
+// 頂点は隣から埋められない**（アトラスと違って近傍の概念がない）ので、
+// 灰色を入れて `unfilled` として数える。
+kernel void resolveVertexColors(device const float   *accum  [[buffer(0)]],
+                                device const float   *weight [[buffer(1)]],
+                                device uchar4        *outCol [[buffer(2)]],
+                                constant uint        &count  [[buffer(3)]],
+                                uint gid [[thread_position_in_grid]])
+{
+    if (gid >= count) return;
+    float w = weight[gid];
+    if (w <= 0.0) {
+        outCol[gid] = uchar4(128, 128, 128, 0);   // alpha=0 が未着色の印
+        return;
+    }
+    float3 c = float3(accum[gid * 3 + 0], accum[gid * 3 + 1], accum[gid * 3 + 2]) / w;
+    float3 q = clamp(c, 0.0, 255.0);
+    outCol[gid] = uchar4(uchar(q.r), uchar(q.g), uchar(q.b), 255);
+}

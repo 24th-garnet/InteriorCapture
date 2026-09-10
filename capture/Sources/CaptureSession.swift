@@ -80,6 +80,24 @@ final class CaptureSession: NSObject, ObservableObject {
     //
     // 停止された時間を数えて bake.json に残し、UI でも離れないよう伝える。
 
+    /// 焼き込みの方式。
+    ///
+    /// **`vertexColor` は UV 展開（xatlas）を丸ごと省く。** 展開はこの端末で
+    /// 焼き込み時間の 97% を占める（実測 55 秒のうち 54.5 秒）ので、
+    /// 数秒で終わる。代償は色の解像度がメッシュの辺の長さ（約 2cm）に
+    /// 落ちること。テクスチャ版は 4.7mm/テクセルだった。
+    enum BakeMode: String, CaseIterable {
+        case vertexColor = "頂点カラー（最速）"
+        case texture = "テクスチャ"
+        case both = "両方（比較）"
+
+        var makesTexture: Bool { self != .vertexColor }
+        var makesVertexColor: Bool { self != .texture }
+    }
+
+    /// 既定は比較。同じ撮影から両方を出せば公平に見比べられる。
+    var bakeMode: BakeMode = .both
+
     /// 焼き込み中である。UI が警告を出すために使う。
     @Published private(set) var isBaking = false
     private var backgroundEvents = 0
@@ -329,6 +347,7 @@ extension CaptureSession {
         }
         guard vertices.count > 2, indices.count > 2 else { return }
 
+        let mode = self.bakeMode
         publish { $0.bakeProgress = 0; $0.isBaking = true }
         backgroundEvents = 0
         backgroundSeconds = 0
@@ -340,6 +359,56 @@ extension CaptureSession {
             if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) }
             publish { $0.isBaking = false }
         }
+        // 頂点カラーは先に済ませる。数秒で終わるので、テクスチャ版が
+        // 失敗しても 3D は残る。
+        var vertexColorStats: [String: Any]?
+        if mode.makesVertexColor {
+            do {
+                let vc = try MainActor.assumeIsolatedSafely {
+                    try baker.bakeVertexColors(meshVertices: vertices, meshIndices: indices,
+                                               frames: frames)
+                }
+                let suffix = mode == .both ? "_vc" : ""
+                try? GLBWriter.writeVertexColors(
+                    vertices: vc.vertices, colors: vc.colors, indices: vc.indices,
+                    to: bundleURL.appendingPathComponent("mesh\(suffix).glb"))
+                try? USDZWriter.writeVertexColors(
+                    vertices: vc.vertices, colors: vc.colors, indices: vc.indices,
+                    to: bundleURL.appendingPathComponent("mesh\(suffix).usdz"))
+                vertexColorStats = [
+                    "elapsed_sec": vc.elapsed,
+                    "cpu_sec": vc.cpuSec,
+                    "vertices": vc.vertices.count,
+                    "triangles": vc.indices.count / 3,
+                    "unfilled_ratio": Double(vc.unfilledRatio),
+                    "frames": frames.count,
+                ]
+                let summary = String(format: "頂点カラー %.1f 秒 / 未着色 %.1f%%",
+                                     vc.elapsed, vc.unfilledRatio * 100)
+                print(summary)
+                self.publish { $0.bakeSummary = summary }
+            } catch {
+                print("頂点カラーの焼き込みに失敗: \(error.localizedDescription)")
+            }
+        }
+
+        guard mode.makesTexture else {
+            if let vcs = vertexColorStats,
+               let data = try? JSONSerialization.data(
+                withJSONObject: ["vertex_color": vcs,
+                                 "build_configuration": BuildInfo.configuration,
+                                 "thermal_state": BuildInfo.thermalStateName,
+                                 "low_power_mode": BuildInfo.isLowPowerMode,
+                                 "battery_level": BuildInfo.batteryLevel ?? -1,
+                                 "device": UIDevice.current.systemName + " "
+                                     + UIDevice.current.systemVersion],
+                options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: bundleURL.appendingPathComponent("bake.json"))
+            }
+            publish { $0.bakeProgress = nil }
+            return
+        }
+
         do {
             let result = try MainActor.assumeIsolatedSafely {
                 try baker.bake(meshVertices: vertices, meshIndices: indices, frames: frames) { n, total in
@@ -395,6 +464,8 @@ extension CaptureSession {
                 "low_power_mode": BuildInfo.isLowPowerMode,
                 "battery_level": BuildInfo.batteryLevel ?? -1,
                 "battery_state": BuildInfo.batteryStateName,
+                // 同じ撮影から出した頂点カラー版の実測。**公平な比較のため。**
+                "vertex_color": vertexColorStats ?? [:],
                 // 面数はスキャンごとに変わるので、秒数だけでは速いか遅いか
                 // 分からない。面で割った値が構成に依存しない検出指標になる。
                 "unwrap_us_per_triangle": BuildInfo.Metrics.unwrapMicrosecondsPerTriangle(
