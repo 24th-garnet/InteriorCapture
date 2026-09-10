@@ -26,13 +26,24 @@ targets:
         # `while (group.ref > 0) std::this_thread::yield();` のスピン待機で、
         # 実測で CPU 1490 秒 / 壁時計 249 秒（6 コア常時稼働）のうち、
         # 実作業は Mac 換算 80 CPU 秒程度。**約 95% が空回り**だった。
-        # 単一スレッド版（`-DXA_MULTITHREADED=0`）で 249 秒 -> 55 秒になったが、
-        # 並列を捨てているぶん遅い。**ワーカ数に上限を付けて並列を取り戻す。**
-        # 実測（効率コア限定・192,403 面）で 2 ワーカ 273.6 秒 / 3 → 55.8 /
-        # 8 → 65.0、単一スレッド 152.7。極端が悪く 3〜4 が最良。
-        # 上限の実装は `Vendor/xatlas/xatlas.cpp` の 1 箇所（コメント付き）。
-        # 崩れたら `-DXA_MULTITHREADED=0` に戻せる。
-        compilerFlags: "-w -O2 -DXA_WORKER_CAP=3"
+        # **単一スレッドにする。この端末では並列が効かない。**
+        #
+        # 実測（iPad8,11）:
+        #
+        #     設定              展開      µs/面   CPU/壁時計   CPU µs/面
+        #     既定 7 ワーカ    249 s     1158       6.0         6948
+        #     ワーカ上限 3      61 s      382       3.97        1517
+        #     単一スレッド      55 s      332       1.24          412
+        #
+        # ワーカ 3 は **CPU を 3.7 倍使って速度 0.87 倍**。追加スレッドは
+        # 何も生んでいない。SoC の電力枠が固定で、コアを増やすと 1 コアの
+        # クロックが落ちるためと見ている（`thermal_state` は nominal のまま）。
+        # 端末の単一スレッド性能は正常（Mac の 2.3 倍で A12Z として妥当）。
+        #
+        # Mac では並列が効く（単一 34.5 秒 / 3 ワーカ 16.3 秒）。`XA_WORKER_CAP`
+        # の実装は残してあるので、並列が効く端末では `-DXA_WORKER_CAP=3` に
+        # 差し替えればよい。
+        compilerFlags: "-w -O2 -DXA_MULTITHREADED=0"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.garnet.madoriba.capture
