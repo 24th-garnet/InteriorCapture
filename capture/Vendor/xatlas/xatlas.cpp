@@ -3139,7 +3139,33 @@ public:
 			m_groups[i].ref = 0;
 			m_groups[i].userData = nullptr;
 		}
-		m_workers.resize(std::thread::hardware_concurrency() <= 1 ? 1 : std::thread::hardware_concurrency() - 1);
+		// madoriba: ワーカ数に上限を付ける（**外部コードへの唯一の変更**）。
+		//
+		// 既定の `hardware_concurrency() - 1` は、コアが制約された端末で
+		// 崩壊する。`wait()` は `while (group.ref > 0) yield();` のスピン
+		// 待機なので、実効コアが足りないと空回りが支配する。iPad8,11 の実測で
+		// 展開が 249 秒（CPU 1490 秒 = 6 コア常時稼働、うち約 8 割が空回り）。
+		//
+		// Mac で効率コアに限定して振った実測（192,403 面）:
+		//
+		//     2 ワーカ 273.6s / 3 → 55.8 / 4 → 56.4 / 6 → 58.5 / 8 → 65.0
+		//     単一スレッド（XA_MULTITHREADED=0） 152.7
+		//
+		// **極端が悪く 3〜4 が最良。** 通常のコアでも 3 → 16.0 / 8 → 14.1 秒
+		// で差は小さいので、上限 3 なら制約下でも通常時でも良い。
+		//
+		// `threadCount()` は据え置き（= hardware_concurrency）。スレッド単位の
+		// 配列は過大側になるだけで、添字は 0..cap の範囲に収まるので安全。
+#ifndef XA_WORKER_CAP
+#define XA_WORKER_CAP 0   // 0 なら上限なし（xatlas 本来の挙動）
+#endif
+		{
+			const uint32_t hw = std::thread::hardware_concurrency();
+			uint32_t n = hw <= 1 ? 1 : hw - 1;
+			if (XA_WORKER_CAP > 0)
+				n = min(n, (uint32_t)XA_WORKER_CAP);
+			m_workers.resize(n);
+		}
 		for (uint32_t i = 0; i < m_workers.size(); i++) {
 			new (&m_workers[i]) Worker();
 			m_workers[i].wakeup = false;

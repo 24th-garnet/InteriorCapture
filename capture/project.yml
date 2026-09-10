@@ -26,9 +26,13 @@ targets:
         # `while (group.ref > 0) std::this_thread::yield();` のスピン待機で、
         # 実測で CPU 1490 秒 / 壁時計 249 秒（6 コア常時稼働）のうち、
         # 実作業は Mac 換算 80 CPU 秒程度。**約 95% が空回り**だった。
-        # 単一スレッド版は `wait()` がキューを順に実行するだけで、
-        # スレッド・条件変数・スピンがない。出力（チャート分割・UV）は同一。
-        compilerFlags: "-w -O2 -DXA_MULTITHREADED=0"
+        # 単一スレッド版（`-DXA_MULTITHREADED=0`）で 249 秒 -> 55 秒になったが、
+        # 並列を捨てているぶん遅い。**ワーカ数に上限を付けて並列を取り戻す。**
+        # 実測（効率コア限定・192,403 面）で 2 ワーカ 273.6 秒 / 3 → 55.8 /
+        # 8 → 65.0、単一スレッド 152.7。極端が悪く 3〜4 が最良。
+        # 上限の実装は `Vendor/xatlas/xatlas.cpp` の 1 箇所（コメント付き）。
+        # 崩れたら `-DXA_MULTITHREADED=0` に戻せる。
+        compilerFlags: "-w -O2 -DXA_WORKER_CAP=3"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.garnet.madoriba.capture
