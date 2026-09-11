@@ -74,6 +74,22 @@ struct MeshPreviewView: UIViewRepresentable {
         coordinator.stop()
     }
 
+    /// 投影行列の画角を広げる。
+    ///
+    /// **m00 / m11 は 1/tan(画角/2)** なので、割れば tan がその倍になり
+    /// 視野が広がる。行列を作り直さないので、向きとアスペクトの扱いは
+    /// ARKit のものをそのまま引き継げる（自分で組んで縦横を取り違えた
+    /// ことがある）。位置と向きは変えないので、**中心に写るものは
+    /// 変わらない**。
+    static func widen(_ projection: simd_float4x4, by scale: Float) -> simd_float4x4 {
+        let k = max(scale, 0.2)
+        guard k != 1 else { return projection }
+        var out = projection
+        out.columns.0.x /= k
+        out.columns.1.y /= k
+        return out
+    }
+
     /// 画面の向き。`UIDevice.orientation` は伏せ置きなどで当てにならないので、
     /// ウィンドウシーンの値を使う。取れなければ縦とみなす。
     static func interfaceOrientation(of view: UIView) -> UIInterfaceOrientation {
@@ -117,10 +133,12 @@ struct MeshPreviewView: UIViewRepresentable {
             node.simdTransform = simd_inverse(arCamera.viewMatrix(for: orientation))
             // 画角も同じ理由で `projectionMatrix` から取る。縦横を取り違えると
             // 視野が狭く見える。ビューポートの大きさも渡すこと。
-            node.camera?.projectionTransform = SCNMatrix4(
-                arCamera.projectionMatrix(for: orientation, viewportSize: size,
-                                          zNear: CGFloat(MeshPreviewView.zNear),
-                                          zFar: CGFloat(MeshPreviewView.zFar)))
+            var projection = arCamera.projectionMatrix(
+                for: orientation, viewportSize: size,
+                zNear: CGFloat(MeshPreviewView.zNear),
+                zFar: CGFloat(MeshPreviewView.zFar))
+            projection = MeshPreviewView.widen(projection, by: session?.previewFOVScale ?? 1)
+            node.camera?.projectionTransform = SCNMatrix4(projection)
         }
     }
 

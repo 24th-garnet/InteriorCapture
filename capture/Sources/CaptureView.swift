@@ -190,11 +190,25 @@ struct CaptureView: View {
                     .font(.caption)
                     .padding(8)
                     .background(.ultraThinMaterial, in: Capsule())
-                Toggle("プレビュー", isOn: Binding(
-                    get: { capture.previewEnabled },
-                    set: { capture.previewEnabled = $0 }
-                ))
-                .toggleStyle(.button)
+                HStack(spacing: 10) {
+                    Toggle("プレビュー", isOn: Binding(
+                        get: { capture.previewEnabled },
+                        set: { capture.previewEnabled = $0 }
+                    ))
+                    .toggleStyle(.button)
+                    // 画角。**上下分割はカメラ本来の縦を 50% 切るので
+                    // 1.0 倍だと縦 33.5 度の覗き穴になる。** 現場で選ぶ。
+                    Picker("", selection: Binding(
+                        get: { capture.previewFOVScale },
+                        set: { capture.previewFOVScale = $0 }
+                    )) {
+                        Text("1.0x").tag(Float(1.0))
+                        Text("1.8x").tag(Float(1.8))
+                        Text("2.6x").tag(Float(2.6))
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 200)
+                }
                 .font(.caption)
                 recordButton(title: "停止", color: .white) { capture.stopRecording() }
             }
