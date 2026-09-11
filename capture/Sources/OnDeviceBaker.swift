@@ -130,6 +130,9 @@ final class OnDeviceBaker {
         let indices: [UInt32]
         /// 頂点ごとの RGB（0..255）。
         let colors: [SIMD3<UInt8>]
+        /// 色が付いたか。**撮り残しをプレビューで見せるために要る。**
+        /// 付かなかった頂点の `colors` は灰色なので、色だけでは区別できない。
+        let filled: [Bool]
         /// どのフレームからも見えなかった頂点の割合。
         let unfilledRatio: Float
         let elapsed: TimeInterval
@@ -196,13 +199,15 @@ final class OnDeviceBaker {
 
         let raw = colBuf.contents().assumingMemoryBound(to: UInt8.self)
         var colors = [SIMD3<UInt8>](repeating: .zero, count: count)
+        var filledFlags = [Bool](repeating: false, count: count)
         var filled = 0
         for i in 0..<count {
             colors[i] = SIMD3(raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2])
-            if raw[i * 4 + 3] != 0 { filled += 1 }
+            if raw[i * 4 + 3] != 0 { filledFlags[i] = true; filled += 1 }
         }
         return VertexColorResult(
             vertices: meshVertices, indices: meshIndices, colors: colors,
+            filled: filledFlags,
             unfilledRatio: 1 - Float(filled) / Float(count),
             elapsed: CFAbsoluteTimeGetCurrent() - start,
             cpuSec: OnDeviceBaker.processCPUSeconds() - cpuStart)

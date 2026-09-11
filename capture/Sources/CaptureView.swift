@@ -89,10 +89,17 @@ struct CaptureView: View {
                     .stroke(.white.opacity(0.25), lineWidth: 1))
                 .onTapGesture { previewLarge.toggle() }
             if let p = capture.preview {
-                Text(String(format: "頂点色 %.2f 秒 / %d 面",
-                            p.elapsed, p.indices.count / 3))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.6))
+                let unfilled = p.filled.isEmpty ? 0
+                    : Double(p.filled.lazy.filter { !$0 }.count) / Double(p.filled.count) * 100
+                HStack(spacing: 6) {
+                    // 凡例。赤紫が何を意味するか分からないと読めない。
+                    Circle().fill(Color(red: 0.85, green: 0.05, blue: 0.45))
+                        .frame(width: 7, height: 7)
+                    Text(String(format: "未撮影 %.0f%%　真上から・床上1.6mで切断　%.2f 秒",
+                                unfilled, p.elapsed))
+                }
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.75))
             }
         }
     }

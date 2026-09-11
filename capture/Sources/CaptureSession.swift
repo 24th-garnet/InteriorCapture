@@ -135,7 +135,11 @@ final class CaptureSession: NSObject, ObservableObject {
     struct MeshPreview {
         var vertices: [SIMD3<Float>]
         var colors: [SIMD3<UInt8>]
+        /// 色が付いたか。未着色は**撮り残し**として目立つ色で描く。
+        var filled: [Bool]
         var indices: [UInt32]
+        /// 床の高さ。真上から見るとき、ここから上を切って中を見せる。
+        var floorY: Float
         /// 生成にかかった秒数。影響を測るために出す。
         var elapsed: TimeInterval
     }
@@ -184,8 +188,12 @@ final class CaptureSession: NSObject, ObservableObject {
                 try baker.bakeVertexColors(meshVertices: vertices, meshIndices: indices,
                                            frames: frames)
             }) else { return }
+            // 床の高さ。最小値は外れ値に弱いので下位 5% を使う。
+            let ys = vc.vertices.map { $0.y }.sorted()
+            let floorY = ys.isEmpty ? 0 : ys[max(0, ys.count / 20)]
             let out = MeshPreview(vertices: vc.vertices, colors: vc.colors,
-                                  indices: vc.indices,
+                                  filled: vc.filled, indices: vc.indices,
+                                  floorY: floorY,
                                   elapsed: CFAbsoluteTimeGetCurrent() - started)
             self.publish { $0.preview = out }
         }
