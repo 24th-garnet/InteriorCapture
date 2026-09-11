@@ -95,8 +95,19 @@ final class CaptureSession: NSObject, ObservableObject {
         var makesVertexColor: Bool { self != .texture }
     }
 
-    /// 既定は比較。同じ撮影から両方を出せば公平に見比べられる。
-    var bakeMode: BakeMode = .both
+    /// **既定は頂点カラー。** 同一データでの比較（room-77eab748）で、現場確認の
+    /// 用途には頂点カラーで足りると判断した:
+    ///
+    ///     頂点カラー   0.26 秒   未着色 8.4%   頂点 86,039（約 2cm）
+    ///     テクスチャ  70.09 秒   未着色 6.6%   アトラス 2203（4.7mm）
+    ///
+    /// **266 分の 1。** しかも CPU 0.49 秒で GPU の往復が支配的なので、
+    /// 部屋が大きくなってもほとんど増えない。テクスチャ版は面数に比例し、
+    /// 実測係数が 332〜430 µs/面 とばらつく（21 万面で 72〜94 秒）。
+    ///
+    /// 最終品はサーバ側の高精度版（`mdr2colmap texture`、アトラス 4096 /
+    /// テクセル 2.5mm）で作る。端末側は「抜けと構図が分かる」水準で足りる。
+    var bakeMode: BakeMode = .vertexColor
 
     /// 焼き込み中である。UI が警告を出すために使う。
     @Published private(set) var isBaking = false
@@ -358,6 +369,11 @@ extension CaptureSession {
         defer {
             if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) }
             publish { $0.isBaking = false }
+            // **焼き込み用テクスチャを解放する。**
+            // 保持しているのは 238 枚 x 約 2.9MB ≒ 690MB。焼き込みが終われば
+            // 用済みなのに、これまではアプリの寿命いっぱい残っていた。
+            // 次の撮影で作り直されるので、ここで手放してよい。
+            self.frameStore = nil
         }
         // 頂点カラーは先に済ませる。数秒で終わるので、テクスチャ版が
         // 失敗しても 3D は残る。
