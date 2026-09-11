@@ -28,35 +28,36 @@ struct CaptureView: View {
     @StateObject private var capture = CaptureSession()
     @State private var showProbe = false
     @State private var showLibrary = false
-    @State private var previewLarge = false
+    /// プレビューを主画面にするか。既定は主。タップで入れ替える。
+    @State private var previewIsMain = true
     /// RoomPlan と同居できるかの実測。撮影経路を作り直す前に潰しておく。
     @StateObject private var coexist = CoexistProbeBox()
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            ARViewContainer(session: capture).ignoresSafeArea()
+            // **プレビューが主画面。** 撮りながら赤紫（未撮影）を塗り潰していく
+            // のが作業の中心なので、それを最大に出す。カメラ映像は隅に回す。
+            //
+            // **`ARViewContainer` は必ず生かしておく。** `ARSession` を保持して
+            // いるのはこのビューで、外すと撮影そのものが止まる。小さくするだけ。
+            if showPreviewAsMain {
+                MeshPreviewView(session: capture, preview: capture.preview)
+                    .ignoresSafeArea()
+                cornerPanel { ARViewContainer(session: capture) }
+            } else {
+                ARViewContainer(session: capture).ignoresSafeArea()
+                if capture.preview != nil {
+                    cornerPanel { MeshPreviewView(session: capture, preview: capture.preview) }
+                }
+            }
 
             VStack {
                 statsBar
                 Spacer()
+                if showPreviewAsMain { coverageBar }
                 controls
             }
             .padding()
-
-            // 撮影中のプレビュー。**撮り残しをその場で見つけるため。**
-            // 右下に置き、タップで大小を切り替える。
-            if capture.preview != nil {
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        previewPanel
-                    }
-                }
-                .padding(.trailing, 16)
-                .padding(.bottom, 120)   // controls に被らせない
-                .allowsHitTesting(true)
-            }
         }
         .sheet(isPresented: $showProbe) {
             probeSheet
@@ -71,35 +72,62 @@ struct CaptureView: View {
         }
     }
 
+    /// プレビューを主画面にしてよいか。**まだメッシュが無いうちはカメラを出す。**
+    /// 真っ黒な画面から始まると、何が起きているのか分からない。
+    private var showPreviewAsMain: Bool { previewIsMain && capture.preview != nil }
+
+    /// 隅の小窓。タップで主従を入れ替える。
+    private func cornerPanel<V: View>(@ViewBuilder _ content: () -> V) -> some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                content()
+                    .frame(width: 150, height: 200)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10)
+                        .stroke(.white.opacity(0.3), lineWidth: 1))
+                    .shadow(radius: 6)
+                    .onTapGesture { previewIsMain.toggle() }
+            }
+        }
+        .padding(.trailing, 16)
+        .padding(.bottom, 130)   // controls に被らせない
+    }
 
     private var isFailed: Bool {
         if case .failed = capture.state { return true }
         return false
     }
 
-    // MARK: - 統計表示
-
-    private var previewPanel: some View {
-        VStack(alignment: .trailing, spacing: 3) {
-            MeshPreviewView(session: capture, preview: capture.preview)
-                .frame(width: previewLarge ? 380 : 190,
-                       height: previewLarge ? 380 : 190)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10)
-                    .stroke(.white.opacity(0.25), lineWidth: 1))
-                .onTapGesture { previewLarge.toggle() }
-            if let p = capture.preview {
-                let unfilled = p.filled.isEmpty ? 0
-                    : Double(p.filled.lazy.filter { !$0 }.count) / Double(p.filled.count) * 100
-                HStack(spacing: 6) {
-                    // 凡例。赤紫が何を意味するか分からないと読めない。
-                    Circle().fill(Color(red: 0.85, green: 0.05, blue: 0.45))
-                        .frame(width: 7, height: 7)
-                    Text(String(format: "未撮影 %.0f%%　いまの視点　%.2f 秒",
-                                unfilled, p.elapsed))
+    /// 未撮影の割合を帯で出す。**数字より「あとどれくらいか」が分かる。**
+    private var coverageBar: some View {
+        Group {
+            if let p = capture.preview, !p.filled.isEmpty {
+                let done = Double(p.filled.lazy.filter { $0 }.count) / Double(p.filled.count)
+                VStack(spacing: 4) {
+                    HStack(spacing: 8) {
+                        Circle().fill(Color(red: 0.85, green: 0.05, blue: 0.45))
+                            .frame(width: 9, height: 9)
+                        Text("赤紫の場所へカメラを向けてください")
+                            .font(.caption)
+                        Spacer()
+                        Text(String(format: "撮影済 %.0f%%", done * 100))
+                            .font(.system(.caption, design: .monospaced))
+                    }
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color(red: 0.85, green: 0.05, blue: 0.45).opacity(0.5))
+                            Capsule().fill(.green)
+                                .frame(width: geo.size.width * done)
+                        }
+                    }
+                    .frame(height: 5)
                 }
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.75))
+                .foregroundStyle(.white)
+                .padding(10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(.bottom, 6)
             }
         }
     }
