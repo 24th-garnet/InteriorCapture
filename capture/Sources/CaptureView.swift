@@ -28,6 +28,7 @@ struct CaptureView: View {
     @StateObject private var capture = CaptureSession()
     @State private var showProbe = false
     @State private var showLibrary = false
+    @State private var previewLarge = false
     /// RoomPlan と同居できるかの実測。撮影経路を作り直す前に潰しておく。
     @StateObject private var coexist = CoexistProbeBox()
 
@@ -41,6 +42,21 @@ struct CaptureView: View {
                 controls
             }
             .padding()
+
+            // 撮影中のプレビュー。**撮り残しをその場で見つけるため。**
+            // 右下に置き、タップで大小を切り替える。
+            if capture.preview != nil {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        previewPanel
+                    }
+                }
+                .padding(.trailing, 16)
+                .padding(.bottom, 120)   // controls に被らせない
+                .allowsHitTesting(true)
+            }
         }
         .sheet(isPresented: $showProbe) {
             probeSheet
@@ -62,6 +78,24 @@ struct CaptureView: View {
     }
 
     // MARK: - 統計表示
+
+    private var previewPanel: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            MeshPreviewView(preview: capture.preview)
+                .frame(width: previewLarge ? 380 : 190,
+                       height: previewLarge ? 380 : 190)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(.white.opacity(0.25), lineWidth: 1))
+                .onTapGesture { previewLarge.toggle() }
+            if let p = capture.preview {
+                Text(String(format: "頂点色 %.2f 秒 / %d 面",
+                            p.elapsed, p.indices.count / 3))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+        }
+    }
 
     private var statsBar: some View {
         HStack(spacing: 16) {
@@ -143,6 +177,12 @@ struct CaptureView: View {
                     .font(.caption)
                     .padding(8)
                     .background(.ultraThinMaterial, in: Capsule())
+                Toggle("プレビュー", isOn: Binding(
+                    get: { capture.previewEnabled },
+                    set: { capture.previewEnabled = $0 }
+                ))
+                .toggleStyle(.button)
+                .font(.caption)
                 recordButton(title: "停止", color: .white) { capture.stopRecording() }
             }
         case .finishing:

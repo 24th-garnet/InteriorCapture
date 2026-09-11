@@ -87,12 +87,15 @@ final class CaptureSession: NSObject, ObservableObject {
     /// 数秒で終わる。代償は色の解像度がメッシュの辺の長さ（約 2cm）に
     /// 落ちること。テクスチャ版は 4.7mm/テクセルだった。
     enum BakeMode: String, CaseIterable {
-        case vertexColor = "頂点カラー（最速）"
+        /// 停止後は何も焼かない。**現場確認は撮影中のプレビューで済ませる。**
+        /// 最終品はサーバ側（`mdr2colmap texture`）で作る。
+        case none = "焼かない（最速）"
+        case vertexColor = "頂点カラー"
         case texture = "テクスチャ"
         case both = "両方（比較）"
 
-        var makesTexture: Bool { self != .vertexColor }
-        var makesVertexColor: Bool { self != .texture }
+        var makesTexture: Bool { self == .texture || self == .both }
+        var makesVertexColor: Bool { self == .vertexColor || self == .both }
     }
 
     /// **既定は頂点カラー。** 同一データでの比較（room-77eab748）で、現場確認の
@@ -107,7 +110,114 @@ final class CaptureSession: NSObject, ObservableObject {
     ///
     /// 最終品はサーバ側の高精度版（`mdr2colmap texture`、アトラス 4096 /
     /// テクセル 2.5mm）で作る。端末側は「抜けと構図が分かる」水準で足りる。
-    var bakeMode: BakeMode = .vertexColor
+    var bakeMode: BakeMode = .none
+
+    // MARK: 撮影中のプレビュー
+    //
+    // **頂点カラーが 0.26 秒で焼けるので、撮影中に繰り返して見せられる。**
+    // 撮り残しをその場で見つけるための機能で、最終品には使わない。
+    //
+    // 撮影中に処理を足すのはこの案件でいちばん壊れてきた部分なので、
+    // 入／切を切り替えられるようにし、採用フレーム数と実効 fps への
+    // 影響を測れるようにする。
+
+    /// プレビューを作るか。既定は入。**撮影中に切り替えられる**ようにして、
+    /// 採用フレーム数と実効 fps への影響を同じ撮影の中でも比べられるようにする。
+    @Published var previewEnabled = true {
+        didSet {
+            if !previewEnabled { preview = nil }
+        }
+    }
+    /// プレビューの更新間隔（秒）。
+    static let previewInterval: TimeInterval = 2.0
+
+    /// 撮影中プレビューの中身。UI が SceneKit で描く。
+    struct MeshPreview {
+        var vertices: [SIMD3<Float>]
+        var colors: [SIMD3<UInt8>]
+        var indices: [UInt32]
+        /// 生成にかかった秒数。影響を測るために出す。
+        var elapsed: TimeInterval
+    }
+
+    @Published private(set) var preview: MeshPreview?
+    /// プレビューの生成が走っている間は次を始めない。撮影を圧迫しないため。
+    private var previewBusy = false
+    private var previewTimer: Timer?
+
+    /// `publish` 経由でメインから呼ぶ入口。`Timer` はメインの run loop に要る。
+    fileprivate func startPreviewLoopFromMain() { startPreviewLoop() }
+    fileprivate func stopPreviewLoopFromMain() { stopPreviewLoop() }
+
+    private func startPreviewLoop() {
+        // 入切は `updatePreview` 側で見る。タイマーは撮影中ずっと回しておき、
+        // 撮影の途中で切り替えても効くようにする。
+        guard previewTimer == nil else { return }
+        previewTimer = Timer.scheduledTimer(
+            withTimeInterval: CaptureSession.previewInterval, repeats: true
+        ) { [weak self] _ in
+            self?.updatePreview()
+        }
+    }
+
+    private func stopPreviewLoop() {
+        previewTimer?.invalidate()
+        previewTimer = nil
+    }
+
+    /// メッシュは**メインスレッドの `currentFrame` から取る**（停止時と同じ作法）。
+    /// 焼き込みは `queue` に投げる。
+    private func updatePreview() {
+        guard previewEnabled, !previewBusy, isRecording else { return }
+        let anchors = (session?.currentFrame?.anchors ?? []).compactMap { $0 as? ARMeshAnchor }
+        guard !anchors.isEmpty else { return }
+        previewBusy = true
+        queue.async { [weak self] in
+            defer { DispatchQueue.main.async { self?.previewBusy = false } }
+            guard let self, let baker = self.baker, let store = self.frameStore else { return }
+            let frames = store.frames
+            guard !frames.isEmpty else { return }
+            let (vertices, indices) = CaptureSession.meshFrom(anchors: anchors)
+            guard vertices.count > 2, indices.count > 2 else { return }
+            let started = CFAbsoluteTimeGetCurrent()
+            guard let vc = try? MainActor.assumeIsolatedSafely({
+                try baker.bakeVertexColors(meshVertices: vertices, meshIndices: indices,
+                                           frames: frames)
+            }) else { return }
+            let out = MeshPreview(vertices: vc.vertices, colors: vc.colors,
+                                  indices: vc.indices,
+                                  elapsed: CFAbsoluteTimeGetCurrent() - started)
+            self.publish { $0.preview = out }
+        }
+    }
+
+    /// ARMeshAnchor 群を world 座標の 1 メッシュに連結する。
+    /// 停止時の焼き込みと**同じ作り**にして、プレビューと本番がずれないようにする。
+    static func meshFrom(anchors: [ARMeshAnchor]) -> ([SIMD3<Float>], [UInt32]) {
+        var vertices: [SIMD3<Float>] = []
+        var indices: [UInt32] = []
+        for anchor in anchors {
+            let base = UInt32(vertices.count)
+            let g = anchor.geometry
+            let t = anchor.transform
+            for i in 0..<g.vertices.count {
+                let off = g.vertices.offset + g.vertices.stride * i
+                let local = g.vertices.buffer.contents().advanced(by: off)
+                    .assumingMemoryBound(to: SIMD3<Float>.self).pointee
+                let w = t * SIMD4<Float>(local.x, local.y, local.z, 1)
+                vertices.append(SIMD3(w.x, w.y, w.z))
+            }
+            let fb = g.faces
+            let raw = fb.buffer.contents().assumingMemoryBound(to: Int32.self)
+            for f in 0..<fb.count {
+                let o = f * fb.indexCountPerPrimitive
+                indices.append(base + UInt32(raw[o]))
+                indices.append(base + UInt32(raw[o + 1]))
+                indices.append(base + UInt32(raw[o + 2]))
+            }
+        }
+        return (vertices, indices)
+    }
 
     /// 焼き込み中である。UI が警告を出すために使う。
     @Published private(set) var isBaking = false
@@ -207,6 +317,8 @@ final class CaptureSession: NSObject, ObservableObject {
                 self.selector.reset()
                 self.startTime = nil
                 self.isRecording = true
+                // プレビューは Timer を使うのでメインで回す
+                self.publish { $0.startPreviewLoopFromMain() }
                 if let device = MTLCreateSystemDefaultDevice() {
                     let store = FrameStore(device: device)
                     store.debugDirectory = self.writer?.bundleURL
@@ -226,6 +338,7 @@ final class CaptureSession: NSObject, ObservableObject {
         queue.async { [weak self] in
             guard let self, self.isRecording, let writer = self.writer else { return }
             self.isRecording = false
+            self.publish { $0.stopPreviewLoopFromMain(); $0.preview = nil }
             self.publish { $0.state = .finishing }
 
             do {
