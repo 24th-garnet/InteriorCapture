@@ -28,33 +28,34 @@ struct CaptureView: View {
     @StateObject private var capture = CaptureSession()
     @State private var showProbe = false
     @State private var showLibrary = false
-    /// プレビューを主画面にするか。既定は主。タップで入れ替える。
-    @State private var previewIsMain = true
     /// RoomPlan と同居できるかの実測。撮影経路を作り直す前に潰しておく。
     @StateObject private var coexist = CoexistProbeBox()
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            // **プレビューが主画面。** 撮りながら赤紫（未撮影）を塗り潰していく
-            // のが作業の中心なので、それを最大に出す。カメラ映像は隅に回す。
+            // **上下（横持ちなら左右）に二分割する。**
+            // カメラ映像とプレビューを同じ画角・同じ向きで並べ、
+            // 「見えているもの」と「撮れているもの」を直接見比べられるようにする。
+            // 重ねたり小窓にしたりすると、対応を頭の中で取る必要が出る。
             //
             // **`ARViewContainer` は必ず生かしておく。** `ARSession` を保持して
-            // いるのはこのビューで、外すと撮影そのものが止まる。小さくするだけ。
-            if showPreviewAsMain {
-                MeshPreviewView(session: capture, preview: capture.preview)
-                    .ignoresSafeArea()
-                cornerPanel { ARViewContainer(session: capture) }
-            } else {
-                ARViewContainer(session: capture).ignoresSafeArea()
-                if capture.preview != nil {
-                    cornerPanel { MeshPreviewView(session: capture, preview: capture.preview) }
+            // いるのはこのビューで、外すと撮影そのものが止まる。
+            GeometryReader { geo in
+                let portrait = geo.size.height >= geo.size.width
+                let layout = portrait
+                    ? AnyLayout(VStackLayout(spacing: 2))
+                    : AnyLayout(HStackLayout(spacing: 2))
+                layout {
+                    ARViewContainer(session: capture)
+                    MeshPreviewView(session: capture, preview: capture.preview)
                 }
             }
+            .ignoresSafeArea()
 
             VStack {
                 statsBar
                 Spacer()
-                if showPreviewAsMain { coverageBar }
+                coverageBar
                 controls
             }
             .padding()
@@ -70,29 +71,6 @@ struct CaptureView: View {
         } message: {
             if case .failed(let message) = capture.state { Text(message) }
         }
-    }
-
-    /// プレビューを主画面にしてよいか。**まだメッシュが無いうちはカメラを出す。**
-    /// 真っ黒な画面から始まると、何が起きているのか分からない。
-    private var showPreviewAsMain: Bool { previewIsMain && capture.preview != nil }
-
-    /// 隅の小窓。タップで主従を入れ替える。
-    private func cornerPanel<V: View>(@ViewBuilder _ content: () -> V) -> some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
-                content()
-                    .frame(width: 150, height: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10)
-                        .stroke(.white.opacity(0.3), lineWidth: 1))
-                    .shadow(radius: 6)
-                    .onTapGesture { previewIsMain.toggle() }
-            }
-        }
-        .padding(.trailing, 16)
-        .padding(.bottom, 130)   // controls に被らせない
     }
 
     private var isFailed: Bool {

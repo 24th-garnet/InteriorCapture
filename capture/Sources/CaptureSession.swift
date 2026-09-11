@@ -131,25 +131,18 @@ final class CaptureSession: NSObject, ObservableObject {
     /// プレビューの更新間隔（秒）。
     static let previewInterval: TimeInterval = 2.0
 
-    /// いまのカメラ姿勢と画角。**プレビューを一人称にするために要る。**
+    /// いまの `ARCamera`。**プレビューを一人称にするために要る。**
     ///
     /// 色の焼き直しは 2 秒ごとで足りるが、視点は毎フレーム追わないと
     /// 「自分がどこを向いているか」と結び付かない。`@Published` にすると
     /// 毎フレーム SwiftUI が再描画されるので、プレビュー側が直接引きに来る。
-    struct CameraPose {
-        var transform: simd_float4x4
-        /// 垂直画角（度）。内部パラメータから出す。
-        var yFovDegrees: Double
-    }
-
-    var currentCameraPose: CameraPose? {
-        guard let cam = session?.currentFrame?.camera else { return nil }
-        let h = Double(cam.imageResolution.height)
-        let fy = Double(cam.intrinsics[1][1])
-        guard fy > 0 else { return nil }
-        return CameraPose(transform: cam.transform,
-                          yFovDegrees: 2 * atan(h / (2 * fy)) * 180 / .pi)
-    }
+    ///
+    /// **`camera.transform` をそのまま使ってはいけない。** ARKit の画像は常に
+    /// 横向き基準なので、縦持ちだと描画が 90 度回る（実機で地面が横に出た）。
+    /// 画角も縦横を取り違える。`viewMatrix(for:)` と
+    /// `projectionMatrix(for:viewportSize:)` に画面の向きと大きさを渡せば、
+    /// 回転も画角もカメラ映像と一致する。
+    var currentARCamera: ARCamera? { session?.currentFrame?.camera }
 
     /// 撮影中プレビューの中身。UI が SceneKit で描く。
     struct MeshPreview {

@@ -1,3 +1,4 @@
+import ARKit
 import SceneKit
 import SwiftUI
 import simd
@@ -31,7 +32,8 @@ struct MeshPreviewView: UIViewRepresentable {
     /// 未着色の色。彩度の高い色にして、実際の内装の色と混ざらないようにする。
     static let unfilledColor = SIMD3<Float>(0.85, 0.05, 0.45)
     /// 近すぎる面を描かない距離。手元の壁で画面が埋まるのを防ぐ。
-    static let zNear = 0.05
+    static let zNear: Float = 0.05
+    static let zFar: Float = 40
 
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
@@ -42,19 +44,15 @@ struct MeshPreviewView: UIViewRepresentable {
         view.rendersContinuously = true      // 視点が毎フレーム動く
         view.preferredFramesPerSecond = 20
 
-        let camera = SCNCamera()
-        camera.zNear = MeshPreviewView.zNear
-        camera.zFar = 40
-        // 垂直画角を合わせる。正方形のパネルなので水平は切れるが、
-        // **上下の対応が取れていれば「どこを向いているか」は伝わる。**
-        camera.projectionDirection = .vertical
+        // 投影は毎フレーム `ARCamera` から作るので、ここでは器だけ用意する。
         let node = SCNNode()
-        node.camera = camera
+        node.camera = SCNCamera()
         view.scene?.rootNode.addChildNode(node)
         view.pointOfView = node
 
         context.coordinator.cameraNode = node
         context.coordinator.session = session
+        context.coordinator.view = view
         context.coordinator.start()
         return view
     }
@@ -76,6 +74,12 @@ struct MeshPreviewView: UIViewRepresentable {
         coordinator.stop()
     }
 
+    /// 画面の向き。`UIDevice.orientation` は伏せ置きなどで当てにならないので、
+    /// ウィンドウシーンの値を使う。取れなければ縦とみなす。
+    static func interfaceOrientation(of view: UIView) -> UIInterfaceOrientation {
+        (view.window?.windowScene?.interfaceOrientation) ?? .portrait
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     /// 視点の追従。`CADisplayLink` で毎フレーム姿勢を読み、カメラに移す。
@@ -85,6 +89,7 @@ struct MeshPreviewView: UIViewRepresentable {
         weak var session: CaptureSession?
         /// 同じ内容で作り直さないための印。`elapsed` は毎回変わる。
         var version: TimeInterval = -1
+        weak var view: SCNView?
         private var link: CADisplayLink?
 
         func start() {
@@ -101,10 +106,21 @@ struct MeshPreviewView: UIViewRepresentable {
         }
 
         @objc private func tick() {
-            guard let pose = session?.currentCameraPose, let cam = cameraNode else { return }
-            // ARKit のカメラも SceneKit のカメラも -Z を向く。変換をそのまま移せる。
-            cam.simdTransform = pose.transform
-            cam.camera?.fieldOfView = CGFloat(pose.yFovDegrees)
+            guard let arCamera = session?.currentARCamera,
+                  let node = cameraNode, let view = view else { return }
+            let size = view.bounds.size
+            guard size.width > 1, size.height > 1 else { return }
+
+            // **画面の向きを渡すのが要点。** `camera.transform` をそのまま使うと
+            // ARKit の画像が横向き基準なので、縦持ちで 90 度回る。
+            let orientation = MeshPreviewView.interfaceOrientation(of: view)
+            node.simdTransform = simd_inverse(arCamera.viewMatrix(for: orientation))
+            // 画角も同じ理由で `projectionMatrix` から取る。縦横を取り違えると
+            // 視野が狭く見える。ビューポートの大きさも渡すこと。
+            node.camera?.projectionTransform = SCNMatrix4(
+                arCamera.projectionMatrix(for: orientation, viewportSize: size,
+                                          zNear: CGFloat(MeshPreviewView.zNear),
+                                          zFar: CGFloat(MeshPreviewView.zFar)))
         }
     }
 
