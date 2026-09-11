@@ -1,6 +1,7 @@
 import ARKit
 import Foundation
 import Metal
+import os
 import simd
 
 /// iPad 上でテクスチャ付きメッシュを生成する（Tier 1 のオンデバイス実装）。
@@ -35,6 +36,13 @@ final class OnDeviceBaker {
     /// 支配的だが、端末は同じ入力の変化で 12.8 倍になった。計算量か
     /// メモリ逼迫かを切り分ける。
     struct UnwrapDetail {
+        /// どの展開を使ったか。**実機で対照するために残す。**
+        var method: String = ""
+        /// テクセル 1 枚が覆う実寸（mm）。**品質の比較はこれで行う。**
+        /// 秒数だけ見ていると、速いのは解像度を落としたからという混同が起きる。
+        var mmPerTexel: Float = 0
+        /// アトラスのうち三角形が乗った割合。
+        var fill: Float = 0
         var addMesh: Double = 0
         var computeCharts: Double = 0
         var packCharts: Double = 0
@@ -122,6 +130,16 @@ final class OnDeviceBaker {
         dilate = try pipeline("dilateAtlas")
         bakeVertexPipeline = try pipeline("bakeFrameVertex")
         resolveVertexPipeline = try pipeline("resolveVertexColors")
+    }
+
+    /// UV 展開の方式。
+    ///
+    /// **既定は `fast`。** xatlas は ComputeCharts だけで 67.6 秒使い、
+    /// これが焼き込み時間の 97% を占めていた。`xatlas` を残すのは実機で
+    /// 対照を取るためで、常用しない。
+    enum UnwrapMethod: String {
+        case fast = "平面成長"
+        case xatlas = "xatlas"
     }
 
     /// 頂点カラーの焼き込み結果。
@@ -217,12 +235,15 @@ final class OnDeviceBaker {
     ///   - meshVertices: ARKit world 座標の頂点
     ///   - meshIndices: 三角形インデックス
     ///   - frames: 記録済みキーフレーム（RGB / 深度 / 信頼度 / ポーズ）
-    ///   - requestedAtlasSize: xatlas に渡す目安。実際の寸法はこれより大きくなりうる。
+    ///   - method: UV 展開の方式。既定の `fast` は反復最適化をしない（[[FastUnwrap]]）
+    ///   - requestedAtlasSize: アトラスの一辺。`nil` なら空きメモリから決める。
+    ///     **`xatlas` では目安にしかならず**、実際の寸法はこれより大きくなりうる。
     func bake(
         meshVertices: [SIMD3<Float>],
         meshIndices: [UInt32],
         frames: [BakedFrame],
-        requestedAtlasSize: Int = 2048,
+        method: UnwrapMethod = .fast,
+        requestedAtlasSize: Int? = nil,
         viewExponent: Float = 8.0,
         progress: ((Int, Int) -> Void)? = nil
     ) throws -> Result {
@@ -236,54 +257,96 @@ final class OnDeviceBaker {
             return now - mark
         }
 
-        // 1. UV 展開（xatlas / C++）
-        guard let atlas = meshVertices.withUnsafeBufferPointer({ vp in
-            meshIndices.withUnsafeBufferPointer { ip in
-                MDRXAtlas.parametrize(
-                    positions: UnsafeRawPointer(vp.baseAddress!),
-                    vertexCount: UInt(meshVertices.count),
-                    // SIMD3<Float> は 16 バイト。12 を渡すと座標が総崩れになる。
-                    stride: UInt(MemoryLayout<SIMD3<Float>>.stride),
-                    indices: ip.baseAddress!,
-                    indexCount: UInt(meshIndices.count),
-                    resolution: UInt32(requestedAtlasSize)
-                )
+        // 1. UV 展開
+        let vertices: [SIMD3<Float>]
+        let uvs: [SIMD2<Float>]
+        let indices: [UInt32]
+        let atlasSize: Int
+        var detail: UnwrapDetail
+
+        switch method {
+        case .fast:
+            let size = requestedAtlasSize ?? FastUnwrap.atlasSize()
+            let memoryBefore = UInt64(os_proc_available_memory())
+            let flat = FastUnwrap.unwrap(vertices: meshVertices, indices: meshIndices,
+                                         atlasSize: size)
+            guard !flat.indices.isEmpty else { throw BakeError.unwrapFailed }
+            vertices = flat.vertices
+            uvs = flat.uvs
+            indices = flat.indices
+            atlasSize = flat.atlasSize
+            // xatlas の内訳と並べて読めるように対応付ける。
+            detail = UnwrapDetail(
+                method: method.rawValue,
+                mmPerTexel: flat.mmPerTexel,
+                fill: flat.fill,
+                addMesh: flat.timings.normals + flat.timings.adjacency,
+                computeCharts: flat.timings.grow + flat.timings.project,
+                packCharts: flat.timings.pack,
+                buildOutput: flat.timings.emit,
+                charts: flat.chartCount,
+                hardwareConcurrency: ProcessInfo.processInfo.activeProcessorCount,
+                availableMemoryBefore: memoryBefore,
+                availableMemoryAfter: UInt64(os_proc_available_memory()),
+                availableMemoryMin: UInt64(os_proc_available_memory()))
+
+        case .xatlas:
+            guard let atlas = meshVertices.withUnsafeBufferPointer({ vp in
+                meshIndices.withUnsafeBufferPointer { ip in
+                    MDRXAtlas.parametrize(
+                        positions: UnsafeRawPointer(vp.baseAddress!),
+                        vertexCount: UInt(meshVertices.count),
+                        // SIMD3<Float> は 16 バイト。12 を渡すと座標が総崩れになる。
+                        stride: UInt(MemoryLayout<SIMD3<Float>>.stride),
+                        indices: ip.baseAddress!,
+                        indexCount: UInt(meshIndices.count),
+                        resolution: UInt32(requestedAtlasSize ?? 2048)
+                    )
+                }
+            }) else { throw BakeError.unwrapFailed }
+
+            detail = UnwrapDetail(
+                method: method.rawValue,
+                addMesh: atlas.addMeshSec,
+                computeCharts: atlas.computeChartsSec,
+                packCharts: atlas.packChartsSec,
+                buildOutput: atlas.buildOutputSec,
+                charts: Int(atlas.chartCount),
+                hardwareConcurrency: Int(atlas.hardwareConcurrency),
+                availableMemoryBefore: atlas.availableMemoryBefore,
+                availableMemoryAfter: atlas.availableMemoryAfter,
+                availableMemoryMin: atlas.availableMemoryMin)
+
+            // **xatlas は resolution を上限ではなく目安として扱う。**
+            // 2048 を要求しても 2367x2361 のような大きさを返す（実測）。
+            // 要求値でテクスチャを作ると、チャートの配置とテクセルが対応せず
+            // アトラス全面がノイズになる。実際に返ってきた寸法に合わせる。
+            guard atlas.atlasCount == 1 else { throw BakeError.multiPageAtlas }
+            atlasSize = max(Int(atlas.atlasWidth), Int(atlas.atlasHeight))
+
+            let outCount = Int(atlas.vertexCount)
+            var v = [SIMD3<Float>](repeating: .zero, count: outCount)
+            var u = [SIMD2<Float>](repeating: .zero, count: outCount)
+            for i in 0..<outCount {
+                v[i] = meshVertices[Int(atlas.vertexMapping[i])]
+                u[i] = SIMD2(atlas.uvs[i * 2], atlas.uvs[i * 2 + 1])
             }
-        }) else { throw BakeError.unwrapFailed }
-
-        let detail = UnwrapDetail(
-            addMesh: atlas.addMeshSec,
-            computeCharts: atlas.computeChartsSec,
-            packCharts: atlas.packChartsSec,
-            buildOutput: atlas.buildOutputSec,
-            charts: Int(atlas.chartCount),
-            hardwareConcurrency: Int(atlas.hardwareConcurrency),
-            availableMemoryBefore: atlas.availableMemoryBefore,
-            availableMemoryAfter: atlas.availableMemoryAfter,
-            availableMemoryMin: atlas.availableMemoryMin)
-
-        // **xatlas は resolution を上限ではなく目安として扱う。**
-        // 2048 を要求しても 2367x2361 のような大きさを返す（実測）。
-        // 要求値でテクスチャを作ると、チャートの配置とテクセルが対応せず
-        // アトラス全面がノイズになる。実際に返ってきた寸法に合わせる。
-        guard atlas.atlasCount == 1 else { throw BakeError.multiPageAtlas }
-        let atlasSize = max(Int(atlas.atlasWidth), Int(atlas.atlasHeight))
-
-        let outCount = Int(atlas.vertexCount)
-        var vertices = [SIMD3<Float>](repeating: .zero, count: outCount)
-        var uvs = [SIMD2<Float>](repeating: .zero, count: outCount)
-        for i in 0..<outCount {
-            vertices[i] = meshVertices[Int(atlas.vertexMapping[i])]
-            uvs[i] = SIMD2(atlas.uvs[i * 2], atlas.uvs[i * 2 + 1])
+            vertices = v
+            uvs = u
+            indices = Array(UnsafeBufferPointer(start: atlas.indices, count: Int(atlas.indexCount)))
         }
-        let indices: [UInt32] = Array(UnsafeBufferPointer(start: atlas.indices, count: Int(atlas.indexCount)))
+        if detail.mmPerTexel == 0 {
+            // xatlas は密度を返さないので、面積から逆算して同じ指標に載せる。
+            detail.mmPerTexel = OnDeviceBaker.mmPerTexel(
+                vertices: meshVertices, indices: meshIndices, atlasSize: atlasSize)
+        }
         timings.unwrap = lap()
 
         // 2. アトラスのラスタライズ（テクセル → world 座標と法線）
         let texels = atlasSize * atlasSize
         guard
-            let vBuf = device.makeBuffer(bytes: vertices, length: outCount * 16),
-            let uvBuf = device.makeBuffer(bytes: uvs, length: outCount * 8),
+            let vBuf = device.makeBuffer(bytes: vertices, length: vertices.count * 16),
+            let uvBuf = device.makeBuffer(bytes: uvs, length: uvs.count * 8),
             let iBuf = device.makeBuffer(bytes: indices, length: indices.count * 4),
             let posBuf = device.makeBuffer(length: texels * 16, options: .storageModePrivate),
             let nrmBuf = device.makeBuffer(length: texels * 16, options: .storageModePrivate),
@@ -333,6 +396,22 @@ final class OnDeviceBaker {
             timings: timings,
             unwrapDetail: detail
         )
+    }
+
+    /// アトラスの寸法と表面積から、テクセル 1 枚の実寸（mm）を出す。
+    ///
+    /// **利用率 100% を仮定した下限。** xatlas の実測は 4,924 チャートで
+    /// 利用率 70% 前後なので、実際はこれより 1.2 倍ほど粗い。
+    static func mmPerTexel(vertices: [SIMD3<Float>], indices: [UInt32], atlasSize: Int) -> Float {
+        guard atlasSize > 0 else { return 0 }
+        var area: Float = 0
+        for t in 0..<(indices.count / 3) {
+            let a = vertices[Int(indices[t * 3 + 0])]
+            let b = vertices[Int(indices[t * 3 + 1])]
+            let c = vertices[Int(indices[t * 3 + 2])]
+            area += simd_length(simd_cross(b - a, c - a)) * 0.5
+        }
+        return sqrt(area * 1e6 / Float(atlasSize * atlasSize))
     }
 
     private func median(_ values: [Float]) -> Float {

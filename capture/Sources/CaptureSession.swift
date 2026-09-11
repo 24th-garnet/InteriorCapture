@@ -82,10 +82,16 @@ final class CaptureSession: NSObject, ObservableObject {
 
     /// 焼き込みの方式。
     ///
-    /// **`vertexColor` は UV 展開（xatlas）を丸ごと省く。** 展開はこの端末で
-    /// 焼き込み時間の 97% を占める（実測 55 秒のうち 54.5 秒）ので、
-    /// 数秒で終わる。代償は色の解像度がメッシュの辺の長さ（約 2cm）に
-    /// 落ちること。テクスチャ版は 4.7mm/テクセルだった。
+    /// **`vertexColor` は UV 展開を丸ごと省く。** 色の解像度はメッシュの辺の
+    /// 長さ（実測 25mm = 頂点間隔）に落ちる。0.26 秒。
+    ///
+    /// `texture` は `FastUnwrap`（平面成長）に置き換わり、xatlas の
+    /// ComputeCharts 67.6 秒が消えた。解像度は 2.5mm/テクセルで、むしろ
+    /// xatlas 2203（3.5mm）より細かい。
+    ///
+    /// **既定は `both`。** テクスチャが数秒で焼けるようになったので、
+    /// 頂点カラー（0.26 秒・撮影直後に必ず残る）とテクスチャ（高精細）を
+    /// 両方出して、実機で並べて比べられるようにしておく。
     enum BakeMode: String, CaseIterable {
         /// 停止後は何も焼かない。**現場確認は撮影中のプレビューで済ませる。**
         /// 最終品はサーバ側（`mdr2colmap texture`）で作る。
@@ -115,7 +121,7 @@ final class CaptureSession: NSObject, ObservableObject {
     ///
     /// **`.none` にはしない。** 0.26 秒しかかからないうえ、これが無いと
     /// 過去プロジェクトから 3D を見返せなくなる。
-    var bakeMode: BakeMode = .vertexColor
+    var bakeMode: BakeMode = .both
 
     // MARK: 撮影中のプレビュー
     //
@@ -631,6 +637,11 @@ extension CaptureSession {
                 // 192,403 面 13.66 秒）なのに、端末は 13.91 -> 178.41 秒
                 // （12.8 倍）になった。段階と残メモリが分かれば決まる。
                 "unwrap_detail": [
+                    // **方式と解像度を並べて残す。** 秒数だけ見ていると
+                    // 「速いのは解像度を落としたから」という混同が起きる。
+                    "method": result.unwrapDetail.method,
+                    "mm_per_texel": result.unwrapDetail.mmPerTexel,
+                    "atlas_fill": result.unwrapDetail.fill,
                     "add_mesh_sec": result.unwrapDetail.addMesh,
                     "compute_charts_sec": result.unwrapDetail.computeCharts,
                     "pack_charts_sec": result.unwrapDetail.packCharts,
