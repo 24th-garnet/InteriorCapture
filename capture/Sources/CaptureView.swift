@@ -81,7 +81,7 @@ struct CaptureView: View {
 
     private var previewPanel: some View {
         VStack(alignment: .trailing, spacing: 3) {
-            MeshPreviewView(preview: capture.preview)
+            MeshPreviewView(session: capture, preview: capture.preview)
                 .frame(width: previewLarge ? 380 : 190,
                        height: previewLarge ? 380 : 190)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -95,7 +95,7 @@ struct CaptureView: View {
                     // 凡例。赤紫が何を意味するか分からないと読めない。
                     Circle().fill(Color(red: 0.85, green: 0.05, blue: 0.45))
                         .frame(width: 7, height: 7)
-                    Text(String(format: "未撮影 %.0f%%　真上から・床上1.6mで切断　%.2f 秒",
+                    Text(String(format: "未撮影 %.0f%%　いまの視点　%.2f 秒",
                                 unfilled, p.elapsed))
                 }
                 .font(.system(size: 9, design: .monospaced))

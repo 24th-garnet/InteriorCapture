@@ -41,32 +41,14 @@ final class MeshPreviewTests: XCTestCase {
             floorY: floorY, elapsed: 0.1)
     }
 
-    /// **天井を落とす。** 落とさないと真上からは天井しか見えない。
-    func testCeilingIsCutAway() throws {
+    /// **一人称なので天井は落とさない。** 上を向けば天井が見えるのが正しく、
+    /// 切ると「そこは撮らなくてよい」と誤解させる。俯瞰では切っていたが、
+    /// 「いまどこを向いているか」と結び付かないので一人称に変えた。
+    func testAllFacesAreKept() throws {
         let room = boxRoom()
-        let total = room.indices.count / 3
         let geo = try XCTUnwrap(MeshPreviewView.geometry(room))
-        let kept = geo.elements[0].primitiveCount
-        XCTAssertLessThan(kept, total, "天井が残っている")
-
-        // 床（2 面）と、切断高さ 1.6m 以下に収まる壁だけが残る。
-        // 壁は床から天井までまたぐので 3 頂点が全部 1.6m 以下にならず落ちる。
-        XCTAssertEqual(kept, 2, "床の 2 面だけが残る")
-    }
-
-    /// またぐ面を残すと切り口に長い三角形が伸びる。3 頂点すべてで判定する。
-    func testFacesStraddlingTheCutAreDropped() throws {
-        var room = boxRoom()
-        // 床上 1.0m までの腰壁を足す。これは残るべき。
-        let base = UInt32(room.vertices.count)
-        room.vertices += [SIMD3(-2, 0, -2), SIMD3(2, 0, -2),
-                          SIMD3(2, 1.0, -2), SIMD3(-2, 1.0, -2)]
-        room.colors += Array(repeating: SIMD3<UInt8>(100, 100, 100), count: 4)
-        room.filled += Array(repeating: true, count: 4)
-        room.indices += [base, base + 1, base + 2, base, base + 2, base + 3]
-
-        let geo = try XCTUnwrap(MeshPreviewView.geometry(room))
-        XCTAssertEqual(geo.elements[0].primitiveCount, 4, "床 2 面 + 腰壁 2 面")
+        XCTAssertEqual(geo.elements[0].primitiveCount, room.indices.count / 3,
+                       "天井を含め全部描く")
     }
 
     /// **未着色は撮り残しとして目立つ色で描く。** 灰色のままだと壁と混ざる。
@@ -94,12 +76,11 @@ final class MeshPreviewTests: XCTestCase {
         let view = SCNView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         view.scene = SCNScene()
         view.backgroundColor = .black
+        // 部屋の中央に立って壁を見ている想定（一人称）
         let cam = SCNNode()
         cam.camera = SCNCamera()
-        cam.camera?.usesOrthographicProjection = true
-        cam.camera?.orthographicScale = 2.6
-        cam.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
-        cam.position = SCNVector3(0, 3, 0)
+        cam.camera?.fieldOfView = 58
+        cam.position = SCNVector3(0, 1.2, 0)
         view.scene?.rootNode.addChildNode(cam)
         view.pointOfView = cam
         let geo = try XCTUnwrap(MeshPreviewView.geometry(room))

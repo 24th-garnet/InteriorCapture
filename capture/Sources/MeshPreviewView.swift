@@ -4,25 +4,34 @@ import simd
 
 /// 撮影中に右下へ出す、頂点カラーのプレビュー。
 ///
-/// **撮り残しをその場で見つけるためのもの。** 最終品には使わない
-/// （色の解像度がメッシュの辺の長さ＝約 2cm に落ちるため）。
+/// **目的は「まだ撮れていない所」を撮影者に直感的に伝えること。**
+/// そのために**撮影者と同じ位置・同じ向き・同じ画角**で描く。カメラ映像に
+/// 重なる位置関係で未撮影が見えるので、どこへ向ければよいかが即分かる。
 ///
-/// 見せ方で踏んだ問題が 2 つある。どちらも「何が写っているのか分からない」
-/// という形で出た:
+/// 俯瞰は一度試して却下した。撮り残しの分布は分かるが、**いま自分がどこを
+/// 向いているかと結び付かない**ので、体を動かす指示にならなかった。
 ///
-/// 1. **真上から見ると天井が手前に来て中が見えない。** ARKit のメッシュは
-///    天井も含むので、俯瞰すると天井の裏側しか映らない。床から
-///    `cutHeight` までを残して上を切る（ドールハウス表示）。
-/// 2. **未着色が灰色なので一様な塊に見える。** 撮り始めは大半が未着色で、
-///    灰色の壁と区別が付かない。未着色は**赤紫**で描いて撮り残しを目立たせる。
+/// 見せ方で踏んだ問題:
+///
+/// - **未着色が灰色だと一様な塊に見える。** 撮り始めは大半が未着色で、
+///   灰色の壁と区別が付かない。未着色は**赤紫**で描く
+/// - 陰影を足さない（`lightingModel = .constant`）。撮り残しと紛らわしい
+///
+/// 更新の分担:
+///
+/// - **視点は毎フレーム**（`CADisplayLink`）。`@Published` にすると毎フレーム
+///   SwiftUI 全体が再描画されるので、ここから直接引きに行く
+/// - **色は 2 秒ごと**（`CaptureSession` のタイマー）。焼き直しに 0.26 秒かかる
 struct MeshPreviewView: UIViewRepresentable {
 
+    /// 姿勢を引きに行く先。毎フレーム読むので参照で持つ。
+    let session: CaptureSession
     let preview: CaptureSession.MeshPreview?
 
-    /// 床から何 m までを残すか。立って撮る前提で、腰より上の壁は見たい。
-    static let cutHeight: Float = 1.6
     /// 未着色の色。彩度の高い色にして、実際の内装の色と混ざらないようにする。
     static let unfilledColor = SIMD3<Float>(0.85, 0.05, 0.45)
+    /// 近すぎる面を描かない距離。手元の壁で画面が埋まるのを防ぐ。
+    static let zNear = 0.05
 
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
@@ -30,22 +39,28 @@ struct MeshPreviewView: UIViewRepresentable {
         view.backgroundColor = UIColor.black.withAlphaComponent(0.45)
         view.allowsCameraControl = false
         view.antialiasingMode = .none        // A12Z の負荷を足さない
-        view.preferredFramesPerSecond = 10
+        view.rendersContinuously = true      // 視点が毎フレーム動く
+        view.preferredFramesPerSecond = 20
 
         let camera = SCNCamera()
-        camera.usesOrthographicProjection = true
-        camera.zNear = 0.01
-        camera.zFar = 100
+        camera.zNear = MeshPreviewView.zNear
+        camera.zFar = 40
+        // 垂直画角を合わせる。正方形のパネルなので水平は切れるが、
+        // **上下の対応が取れていれば「どこを向いているか」は伝わる。**
+        camera.projectionDirection = .vertical
         let node = SCNNode()
         node.camera = camera
-        // 真上から見下ろす。画面上が -Z（北側）になり、間取り図と向きが揃う。
-        node.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
         view.scene?.rootNode.addChildNode(node)
+        view.pointOfView = node
+
         context.coordinator.cameraNode = node
+        context.coordinator.session = session
+        context.coordinator.start()
         return view
     }
 
     func updateUIView(_ view: SCNView, context: Context) {
+        context.coordinator.session = session
         guard let p = preview, !p.vertices.isEmpty, p.indices.count >= 3 else { return }
         guard context.coordinator.version != p.elapsed else { return }
         context.coordinator.version = p.elapsed
@@ -55,47 +70,50 @@ struct MeshPreviewView: UIViewRepresentable {
         let node = SCNNode(geometry: geo)
         view.scene?.rootNode.addChildNode(node)
         context.coordinator.meshNode = node
+    }
 
-        // 残した部分に合わせて俯瞰の高さと倍率を決める
-        var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
-        var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
-        for v in p.vertices where v.y <= p.floorY + MeshPreviewView.cutHeight {
-            lo = simd_min(lo, v); hi = simd_max(hi, v)
-        }
-        guard lo.x <= hi.x else { return }
-        let center = (lo + hi) / 2
-        let span = max(max(hi.x - lo.x, hi.z - lo.z), 0.5)
-        context.coordinator.cameraNode?.position =
-            SCNVector3(center.x, p.floorY + MeshPreviewView.cutHeight + 1, center.z)
-        // orthographicScale は表示高さの半分。少し余白を持たせる。
-        context.coordinator.cameraNode?.camera?.orthographicScale = Double(span) * 0.62
+    static func dismantleUIView(_ view: SCNView, coordinator: Coordinator) {
+        coordinator.stop()
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    /// 視点の追従。`CADisplayLink` で毎フレーム姿勢を読み、カメラに移す。
     final class Coordinator {
         var meshNode: SCNNode?
         var cameraNode: SCNNode?
+        weak var session: CaptureSession?
         /// 同じ内容で作り直さないための印。`elapsed` は毎回変わる。
         var version: TimeInterval = -1
+        private var link: CADisplayLink?
+
+        func start() {
+            guard link == nil else { return }
+            let l = CADisplayLink(target: self, selector: #selector(tick))
+            l.preferredFramesPerSecond = 20
+            l.add(to: .main, forMode: .common)
+            link = l
+        }
+
+        func stop() {
+            link?.invalidate()
+            link = nil
+        }
+
+        @objc private func tick() {
+            guard let pose = session?.currentCameraPose, let cam = cameraNode else { return }
+            // ARKit のカメラも SceneKit のカメラも -Z を向く。変換をそのまま移せる。
+            cam.simdTransform = pose.transform
+            cam.camera?.fieldOfView = CGFloat(pose.yFovDegrees)
+        }
     }
 
-    /// 頂点カラー付きのジオメトリを組む。**床から `cutHeight` までを残す。**
+    /// 頂点カラー付きのジオメトリを組む。
     ///
-    /// 面の 3 頂点すべてが範囲内のものだけを採る。1 頂点でも上なら落とす
-    /// （またぐ面を残すと切り口に長い三角形が伸びて見苦しい）。
+    /// **一人称なので天井は切らない。** 上を向けば天井が見えるのが正しく、
+    /// 切ると「そこは撮らなくてよい」と誤解させる。
     static func geometry(_ p: CaptureSession.MeshPreview) -> SCNGeometry? {
-        let ceiling = p.floorY + cutHeight
-        var keep = [UInt32](); keep.reserveCapacity(p.indices.count)
-        for t in stride(from: 0, to: p.indices.count - 2, by: 3) {
-            let a = p.indices[t], b = p.indices[t + 1], c = p.indices[t + 2]
-            if p.vertices[Int(a)].y <= ceiling,
-               p.vertices[Int(b)].y <= ceiling,
-               p.vertices[Int(c)].y <= ceiling {
-                keep.append(a); keep.append(b); keep.append(c)
-            }
-        }
-        guard keep.count >= 3 else { return nil }
+        guard p.indices.count >= 3 else { return nil }
 
         let positionData = p.vertices.withUnsafeBufferPointer { Data(buffer: $0) }
         let positions = SCNGeometrySource(
@@ -122,10 +140,10 @@ struct MeshPreviewView: UIViewRepresentable {
             componentsPerVector: 3, bytesPerComponent: MemoryLayout<Float>.size,
             dataOffset: 0, dataStride: MemoryLayout<Float>.size * 3)
 
-        let indexData = keep.withUnsafeBufferPointer { Data(buffer: $0) }
+        let indexData = p.indices.withUnsafeBufferPointer { Data(buffer: $0) }
         let element = SCNGeometryElement(
             data: indexData, primitiveType: .triangles,
-            primitiveCount: keep.count / 3,
+            primitiveCount: p.indices.count / 3,
             bytesPerIndex: MemoryLayout<UInt32>.size)
 
         let geo = SCNGeometry(sources: [positions, colors], elements: [element])
