@@ -153,4 +153,45 @@ extension ScanLibraryTests {
         XCTAssertNil(scan.bakeUnwrapSec)
         XCTAssertNil(scan.bakeSlowdown)
     }
+
+    /// **一括削除はバンドルごと消えていないと意味がない。**
+    /// 中のファイルを残して一覧から消えるだけだと、容量が空かないのに
+    /// 退避済みのつもりで上書き撮影を始めてしまう。
+    func testDeleteAllRemovesTheBundlesFromDisk() throws {
+        let a = try makeBundle("room-aaa.mdr", manifest: nil, files: ["mesh.usdz"])
+        let b = try makeBundle("room-bbb.mdr", manifest: nil, files: ["mesh.usdz"])
+        let keep = root.appendingPathComponent("deviceprobe.txt")
+        try Data("x".utf8).write(to: keep)
+
+        let library = ScanLibrary()
+        library.root = root
+        try loadScans(library, expecting: 2)
+        library.deleteAll()
+
+        XCTAssertTrue(library.scans.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: a.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: b.path))
+        // `.mdr` 以外は触らない。診断ログを一緒に消してはいけない。
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keep.path))
+    }
+
+    /// 確認文に出す容量。**計測が終わる前でも 0 で出せること**を押さえる。
+    /// 容量は一覧表示のあとに埋まるので、先に消そうとすると nil が混ざる。
+    func testTotalBytesIgnoresUnmeasuredScans() throws {
+        _ = try makeBundle("room-aaa.mdr", manifest: nil, files: ["mesh.usdz"])
+        let library = ScanLibrary()
+        library.root = root
+        try loadScans(library, expecting: 1)
+        XCTAssertGreaterThanOrEqual(library.totalBytes, 0)
+    }
+
+    /// `reload()` は別キューで読むので、一覧が入るまで待つ。
+    private func loadScans(_ library: ScanLibrary, expecting count: Int) throws {
+        library.reload()
+        let deadline = Date().addingTimeInterval(5)
+        while library.scans.count != count, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertEqual(library.scans.count, count)
+    }
 }

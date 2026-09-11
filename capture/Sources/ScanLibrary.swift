@@ -47,6 +47,8 @@ final class ScanLibrary: ObservableObject {
         var vertexColorUSDZURL: URL { url.appendingPathComponent("mesh_vc.usdz") }
         /// 頂点カラー版の焼き込み秒数（bake.json の `vertex_color`）。
         var vertexColorSec: Double?
+        /// 頂点カラー版の未撮影率。撮影の質の目安として一覧に出す。
+        var vertexColorUnfilled: Double?
 
     }
 
@@ -90,6 +92,17 @@ final class ScanLibrary: ObservableObject {
         scans.removeAll { $0.url == scan.url }
     }
 
+    /// 全部消す。**Mac へ退避済みであることを確認してから使う。**
+    /// バンドルには撮影の生データ（フレーム・深度・ポーズ）が入っており、
+    /// 高精度なテクスチャや間取り図はここからしか作れない。
+    func deleteAll() {
+        for scan in scans { try? FileManager.default.removeItem(at: scan.url) }
+        scans.removeAll()
+    }
+
+    /// 全プロジェクトの合計容量。計測が済んでいるものだけ足す。
+    var totalBytes: Int64 { scans.compactMap { $0.byteSize }.reduce(0, +) }
+
     // MARK: 走査
 
     static func enumerate(in root: URL) -> [Scan] {
@@ -131,6 +144,7 @@ final class ScanLibrary: ObservableObject {
                 }
                 if let vc = b["vertex_color"] as? [String: Any] {
                     scan.vertexColorSec = vc["elapsed_sec"] as? Double
+                    scan.vertexColorUnfilled = vc["unfilled_ratio"] as? Double
                 }
             }
             if scan.createdAt == nil {

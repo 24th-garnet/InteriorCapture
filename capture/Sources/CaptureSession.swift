@@ -98,7 +98,9 @@ final class CaptureSession: NSObject, ObservableObject {
         var makesVertexColor: Bool { self == .vertexColor || self == .both }
     }
 
-    /// **既定は頂点カラー。** 同一データでの比較（room-77eab748）で、現場確認の
+    /// **既定は頂点カラー。これがこのアプリの主機能。**
+    ///
+    /// 同一データでの比較（room-77eab748）で、現場確認の
     /// 用途には頂点カラーで足りると判断した:
     ///
     ///     頂点カラー   0.26 秒   未着色 8.4%   頂点 86,039（約 2cm）
@@ -110,7 +112,10 @@ final class CaptureSession: NSObject, ObservableObject {
     ///
     /// 最終品はサーバ側の高精度版（`mdr2colmap texture`、アトラス 4096 /
     /// テクセル 2.5mm）で作る。端末側は「抜けと構図が分かる」水準で足りる。
-    var bakeMode: BakeMode = .none
+    ///
+    /// **`.none` にはしない。** 0.26 秒しかかからないうえ、これが無いと
+    /// 過去プロジェクトから 3D を見返せなくなる。
+    var bakeMode: BakeMode = .vertexColor
 
     // MARK: 撮影中のプレビュー
     //

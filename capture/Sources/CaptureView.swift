@@ -125,7 +125,7 @@ struct CaptureView: View {
             Button {
                 showLibrary = true
             } label: {
-                Label("過去のスキャン", systemImage: "square.stack.3d.up")
+                Label("過去プロジェクト", systemImage: "square.stack.3d.up")
                     .labelStyle(.titleAndIcon)
             }
             .buttonStyle(.bordered)

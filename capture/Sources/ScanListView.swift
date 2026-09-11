@@ -2,11 +2,11 @@ import QuickLook
 import SwiftUI
 import UIKit
 
-/// 過去のスキャンを選んで 3D を見返す。
+/// 過去プロジェクト。撮影済みのスキャンを選んで 3D を見返す。
 ///
-/// **端末側は 3D 生成に集中する**（当初の設計）。3D は焼き込み時の
-/// `mesh.usdz` を Quick Look で開く（**iOS の Quick Look は GLB を
-/// 開けない**ので USDZ の方を使う）。間取り図はサーバ側で作る。
+/// 3D は撮影直後に焼いた頂点カラーの `mesh.usdz` を Quick Look で開く
+/// （**iOS の Quick Look は GLB を開けない**ので USDZ の方を使う）。
+/// 高精度なテクスチャ版と間取り図はサーバ側（`recon/`）で作る。
 struct ScanListView: View {
 
     @StateObject private var library = ScanLibrary()
@@ -15,6 +15,7 @@ struct ScanListView: View {
     @State private var quickLookURL: URL?
     @State private var deleting: ScanLibrary.Scan?
     @State private var loadError: String?
+    @State private var confirmDeleteAll = false
 
     var body: some View {
         NavigationStack {
@@ -24,7 +25,7 @@ struct ScanListView: View {
                     VStack(spacing: 8) {
                         Image(systemName: "square.stack.3d.up.slash")
                             .font(.largeTitle).foregroundStyle(.secondary)
-                        Text("スキャンがありません").font(.headline)
+                        Text("プロジェクトがありません").font(.headline)
                         Text("撮影すると Documents に room-*.mdr が作られます")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -35,23 +36,36 @@ struct ScanListView: View {
                                 row(scan)
                             }
                         } footer: {
-                            Text("3D は焼き込み時の mesh.usdz を開きます。"
-                                 + "間取り図はサーバ側で作ります。")
+                            Text("3D は撮影直後に焼いた頂点カラーです。"
+                                 + "高精度なテクスチャ版と間取り図は Mac 側で作ります。"
+                                 + "ファイル App からバンドル（room-*.mdr）を取り出せます。")
                         }
                     }
                 }
             }
-            .navigationTitle("過去のスキャン")
+            .navigationTitle("過去プロジェクト")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("閉じる") { dismiss() }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        library.reload()
+                    Menu {
+                        Button {
+                            library.reload()
+                        } label: {
+                            Label("再読み込み", systemImage: "arrow.clockwise")
+                        }
+                        if !library.scans.isEmpty {
+                            Divider()
+                            Button(role: .destructive) {
+                                confirmDeleteAll = true
+                            } label: {
+                                Label("すべて削除", systemImage: "trash")
+                            }
+                        }
                     } label: {
-                        Image(systemName: "arrow.clockwise")
+                        Image(systemName: "ellipsis.circle")
                     }
                 }
             }
@@ -68,6 +82,12 @@ struct ScanListView: View {
             } message: {
                 Text("\(deleting?.title ?? "") を消します。取り消せません。")
             }
+            .alert("すべて削除しますか", isPresented: $confirmDeleteAll) {
+                Button("削除", role: .destructive) { library.deleteAll() }
+                Button("やめる", role: .cancel) {}
+            } message: {
+                Text(deleteAllMessage)
+            }
             .alert("開けません", isPresented: .constant(loadError != nil)) {
                 Button("OK") { loadError = nil }
             } message: {
@@ -76,6 +96,26 @@ struct ScanListView: View {
         }
     }
 
+
+    // MARK: 文面
+
+    /// 一括削除の確認文。
+    ///
+    /// **退避の確認を促すのが目的。** バンドルには撮影の生データ（フレーム・
+    /// 深度・ポーズ）が入っていて、高精度なテクスチャと間取り図はここからしか
+    /// 作れない。端末側の 3D は頂点カラーで、焼き直しには元データが要る。
+    ///
+    /// 式のままビューに置くと型チェックが通らなかったので切り出してある。
+    private var deleteAllMessage: String {
+        let size = library.totalBytes
+        let amount = size > 0
+            ? "（" + ByteCountFormatter.string(fromByteCount: size, countStyle: .file) + "）"
+            : ""
+        return "\(library.scans.count) 件\(amount)を消します。取り消せません。\n\n"
+            + "バンドルには撮影の生データが入っています。高精度なテクスチャと"
+            + "間取り図はここからしか作れないので、Mac へ退避したことを"
+            + "確認してから削除してください。"
+    }
 
     // MARK: 行
 
@@ -94,7 +134,9 @@ struct ScanListView: View {
                       + (scan.vertexColorSec.map { String(format: "　頂点色 %.1f 秒", $0) } ?? "")
                       + (scan.bakeThermal.map { "　温度 \($0)" } ?? ""))
             } else if let v = scan.vertexColorSec {
-                label(String(format: "頂点色 %.1f 秒", v))
+                label(String(format: "3D 生成 %.2f 秒", v)
+                      + (scan.vertexColorUnfilled.map {
+                          String(format: "　未撮影 %.0f%%", $0 * 100) } ?? ""))
             }
             HStack(spacing: 8) {
                 if let n = scan.frameCount {
