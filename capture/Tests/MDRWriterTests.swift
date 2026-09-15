@@ -71,3 +71,38 @@ final class MDRWriterTests: XCTestCase {
         XCTAssertEqual((root["roomplan"] as? [String: Any])?["enabled"] as? Bool, false)
     }
 }
+
+/// 映像フォーマットの選択。**iPhone 対応で初めて効く。**
+final class VideoFormatTests: XCTestCase {
+
+    /// iPad8,11 でこれまで選ばれてきた 1920x1440 が引き続き選ばれること。
+    func testIPadKeepsTheSameFormat() {
+        let sizes = [(w: 1920, h: 1440, fps: 30), (w: 1280, h: 720, fps: 60),
+                     (w: 1440, h: 1080, fps: 30)]
+        XCTAssertEqual(DeviceProbe.pickFormat(from: sizes), 0)
+    }
+
+    /// **4K は採らない。** 焼き込みは 960 幅へ縮小するので画質は上がらず、
+    /// JPEG の負荷とバンドル容量だけが増える。
+    func testFourKIsRejectedInFavourOfHD() {
+        let sizes = [(w: 3840, h: 2160, fps: 30), (w: 1920, h: 1080, fps: 30),
+                     (w: 1280, h: 720, fps: 30)]
+        XCTAssertEqual(DeviceProbe.pickFormat(from: sizes), 1)
+    }
+
+    /// 30fps が無ければそこから選ぶ。
+    func testFallsBackWhenNoThirtyFps() {
+        let sizes = [(w: 1920, h: 1080, fps: 60), (w: 1280, h: 720, fps: 60)]
+        XCTAssertEqual(DeviceProbe.pickFormat(from: sizes), 0)
+    }
+
+    /// 上限を超えるものしか無ければ、一番小さいものを採る。
+    func testPicksSmallestWhenEverythingExceedsTheCap() {
+        let sizes = [(w: 3840, h: 2160, fps: 30), (w: 4096, h: 3072, fps: 30)]
+        XCTAssertEqual(DeviceProbe.pickFormat(from: sizes), 0)
+    }
+
+    func testEmptyIsNil() {
+        XCTAssertNil(DeviceProbe.pickFormat(from: []))
+    }
+}

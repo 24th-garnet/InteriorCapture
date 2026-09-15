@@ -66,12 +66,35 @@ enum DeviceProbe {
     ///
     /// A12Z は ARKit の 4K に非対応（4K は iPhone 11+ または M1 iPad Pro 以降）なので
     /// 1920x1440 が上限。60fps は熱予算を食うだけでキーフレーム選別後の枚数は変わらないので選ばない。
+    /// 採用する映像の横幅の上限。
+    ///
+    /// **iPhone を対象に入れると 4K が選ばれる。** ARKit は iPhone 11 Pro 以降で
+    /// 3840x2160 を提供するが、焼き込みは `FrameStore.bakeImageWidth`（960）へ
+    /// 縮小するので端末側の画質は 1 ミリも上がらない。上がるのは JPEG の
+    /// 書き出し負荷とバンドル容量だけで、採用フレームが減れば未着色が増える。
+    /// iPad で選ばれてきた 1920x1440 はこの上限を通る。
+    static let maxVideoWidth = 1920
+
     static func preferredFormat(from formats: [ARConfiguration.VideoFormat]) -> ARConfiguration.VideoFormat? {
-        let at30 = formats.filter { $0.framesPerSecond == 30 }
-        let pool = at30.isEmpty ? formats : at30
-        return pool.max { a, b in
-            a.imageResolution.width * a.imageResolution.height
-                < b.imageResolution.width * b.imageResolution.height
+        let sizes = formats.map {
+            (w: Int($0.imageResolution.width), h: Int($0.imageResolution.height),
+             fps: $0.framesPerSecond)
         }
+        return pickFormat(from: sizes).map { formats[$0] }
+    }
+
+    /// 採用する添字を返す。`ARConfiguration.VideoFormat` は生成できないので、
+    /// 判断の部分だけ切り出してテストできるようにする。
+    static func pickFormat(from sizes: [(w: Int, h: Int, fps: Int)]) -> Int? {
+        guard !sizes.isEmpty else { return nil }
+        let indices = sizes.indices
+        func best(_ pool: [Int]) -> Int? {
+            pool.max { sizes[$0].w * sizes[$0].h < sizes[$1].w * sizes[$1].h }
+        }
+        let at30 = indices.filter { sizes[$0].fps == 30 }
+        let pool = at30.isEmpty ? Array(indices) : at30
+        let capped = pool.filter { sizes[$0].w <= maxVideoWidth }
+        // 上限に収まるものが無ければ、一番小さいものを採る（4K しか無い機種）。
+        return best(capped) ?? pool.min { sizes[$0].w * sizes[$0].h < sizes[$1].w * sizes[$1].h }
     }
 }

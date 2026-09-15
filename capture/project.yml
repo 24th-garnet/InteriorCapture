@@ -51,7 +51,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: madoriba.capture
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
-        TARGETED_DEVICE_FAMILY: "2"        # iPad のみ
+        # iPhone と iPad の両対応。**ただし LiDAR 非搭載機では撮れない。**
+        # 面の再構成（sceneReconstruction）が LiDAR 必須で、iPhone は
+        # Pro 系にしか載っていない。UIRequiredDeviceCapabilities に arkit は
+        # 入れているが、これは ARKit 対応の可否であって LiDAR の有無ではない
+        # ので、機種の線引きはアプリ内で案内する。
+        TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
         # XcodeGen の既定は CODE_SIGN_IDENTITY = "iPhone Developer" だが、
         # これは Xcode 11 世代で非推奨になった旧称。現行は "Apple Development"。
