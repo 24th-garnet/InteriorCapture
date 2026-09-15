@@ -1,7 +1,7 @@
 name: MadoribaCapture
 
 options:
-  bundleIdPrefix: com.garnet.madoriba
+  bundleIdPrefix: madoriba
   deploymentTarget:
     iOS: "16.0"   # ARFrame.exifData が iOS 16+
   createIntermediateGroups: true
@@ -46,7 +46,7 @@ targets:
         compilerFlags: "-w -O2 -DXA_MULTITHREADED=0"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.garnet.madoriba.capture
+        PRODUCT_BUNDLE_IDENTIFIER: madoriba.capture
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "2"        # iPad のみ
@@ -63,7 +63,10 @@ targets:
         CODE_SIGN_STYLE: Automatic
         # Xcode の GUI で選んだ Team は .xcodeproj に書かれるため
         # xcodegen generate で消える。ここに書いて恒久化する。
-        DEVELOPMENT_TEAM: 5ND4753AQ6
+        # **madoriba チーム。個人チーム（5ND4753AQ6）から移した。**
+        # 無料の Personal Team はプロファイルが 7 日で切れ、毎週リビルドと
+        # 端末での「信頼」のやり直しが要っていた。チーム配布の前提条件。
+        DEVELOPMENT_TEAM: NMK3USW785
     info:
       path: Info.plist
       properties:
