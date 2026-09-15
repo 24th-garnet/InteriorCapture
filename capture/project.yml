@@ -12,6 +12,8 @@ targets:
     platform: iOS
     sources:
       - Sources
+      # TestFlight / App Store Connect はアイコン必須。無いと配信できない。
+      - Assets.xcassets
       - path: Vendor/xatlas
         # xatlas は依存のない単一ファイルの C++。警告は抑える（自前のコードではない）。
         #
@@ -59,6 +61,7 @@ targets:
         CLANG_CXX_LANGUAGE_STANDARD: "c++17"
         CLANG_CXX_LIBRARY: "libc++"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/xatlas"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_IDENTITY: "Apple Development"
         CODE_SIGN_STYLE: Automatic
         # Xcode の GUI で選んだ Team は .xcodeproj に書かれるため
@@ -71,6 +74,15 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: madoriba capture
+        # 独自の暗号は実装していない（OS 標準の範囲のみ）。未設定だと
+        # App Store Connect がビルドごとに輸出コンプライアンスを聞いてくる。
+        ITSAppUsesNonExemptEncryption: false
+        # **版は project.yml で管理する。** 生成された Info.plist に 1.0 / 1 が
+        # 直書きされていて、MARKETING_VERSION を上げても反映されていなかった。
+        # TestFlight は同じ CFBundleVersion を 2 回受け付けないので、
+        # 上げ忘れるとアップロードが弾かれる。
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         # LiDAR スキャンにカメラを使う
         NSCameraUsageDescription: 室内をスキャンして 3D 復元するためにカメラを使用します。
