@@ -91,10 +91,13 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UIRequiredDeviceCapabilities: [arkit]
+        # **iPad は 4 方向すべて必要。** 3 方向だと App Store Connect が
+        # マルチタスク非対応として弾く（code 90474、実際に弾かれた）。
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
 
