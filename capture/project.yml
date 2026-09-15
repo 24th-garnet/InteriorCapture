@@ -50,7 +50,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: madoriba.capture
         MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        CURRENT_PROJECT_VERSION: "2"
         # iPhone と iPad の両対応。**ただし LiDAR 非搭載機では撮れない。**
         # 面の再構成（sceneReconstruction）が LiDAR 必須で、iPhone は
         # Pro 系にしか載っていない。UIRequiredDeviceCapabilities に arkit は
