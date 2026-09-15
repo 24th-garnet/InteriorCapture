@@ -50,7 +50,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: madoriba.capture
         MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
         # iPhone と iPad の両対応。**ただし LiDAR 非搭載機では撮れない。**
         # 面の再構成（sceneReconstruction）が LiDAR 必須で、iPhone は
         # Pro 系にしか載っていない。UIRequiredDeviceCapabilities に arkit は
@@ -95,7 +95,11 @@ targets:
         # ストリーミング転送 (Phase 4) を実装するまではこれが唯一の取り出し口。
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        UIRequiredDeviceCapabilities: [arkit]
+        # **LiDAR は指定できない。** 対応するキーが無いので、ストアで
+        # 絞れるのはここまで。LiDAR 搭載機はすべて A12 以降なので、
+        # 世代で絞れば明らかに動かない機種は除ける。非搭載の A12 以降
+        # （iPhone 14 など）は除けないため、最終的な判定はアプリ内で行う。
+        UIRequiredDeviceCapabilities: [arkit, iphone-ipad-minimum-performance-a12]
         # **iPad は 4 方向すべて必要。** 3 方向だと App Store Connect が
         # マルチタスク非対応として弾く（code 90474、実際に弾かれた）。
         UISupportedInterfaceOrientations:

@@ -55,11 +55,7 @@ struct CaptureView: View {
             VStack {
                 statsBar
                 Spacer()
-                if let probe = capture.probe, !probe.supportsSceneReconstruction {
-                    unsupportedBanner
-                } else {
-                    coverageBar
-                }
+                coverageBar
                 controls
             }
             .padding()
@@ -75,33 +71,6 @@ struct CaptureView: View {
         } message: {
             if case .failed(let message) = capture.state { Text(message) }
         }
-    }
-
-    /// LiDAR が無い機種への案内。
-    ///
-    /// **黙って撮らせてはいけない。** 面の再構成が無いとメッシュが 1 枚も
-    /// 届かず、撮影は成功したように見えて 3D が空になる。iPhone は Pro 系
-    /// にしか LiDAR が載っていないので、iPhone 対応にすると必ず踏む。
-    private var unsupportedBanner: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("この端末では 3D を作れません").font(.callout.weight(.semibold))
-                Text("LiDAR スキャナが要ります（iPhone は Pro 系、iPad は Pro / Air の一部）")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .foregroundStyle(.white)
-        .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .padding(.bottom, 6)
-    }
-
-    /// LiDAR が無ければ撮影させない。
-    private var canCapture: Bool {
-        capture.probe.map { $0.supportsSceneReconstruction } ?? true
     }
 
     private var isFailed: Bool {
@@ -224,8 +193,6 @@ struct CaptureView: View {
             .toggleStyle(.button)
             .font(.caption)
             recordButton(title: "録画開始", color: .red) { capture.startRecording() }
-                .disabled(!canCapture)
-                .opacity(canCapture ? 1 : 0.4)
         case .recording:
             VStack(spacing: 8) {
                 Text("外周を 3 パス（水平／天井／床）+ 中央をツアー導線どおりに 1 パス")
