@@ -218,11 +218,37 @@ final class MDRWriter {
         try data.write(to: bundleURL.appendingPathComponent("manifest.json"))
     }
 
+    /// ARKit の面分類。`ARMeshClassification` の生値に対応する。
+    ///
+    /// **平面図を起こすのに要る唯一の欠けた情報がこれ。** メッシュの幾何だけでは
+    /// 扉と窓は出ない（閉じた扉は壁と同一平面なので痕跡が残らず、メッシュの穴は
+    /// 撮り残しと区別がつかない）。ARKit は `.meshWithClassification` で
+    /// **すでに面ごとに分類している**のに、これまで書き出していなかった。
+    static let classNames = ["none", "wall", "floor", "ceiling",
+                             "table", "seat", "window", "door"]
+
+    /// 面分類の内訳。**扉や窓が実際に出ているかを一目で見るため。**
+    /// バイナリを読まなくても `mesh_class.json` で分かる。
+    static func classHistogram(_ classes: [UInt8]) -> [String: Int] {
+        var counts = [String: Int]()
+        for c in classes {
+            let name = Int(c) < classNames.count ? classNames[Int(c)] : "unknown-\(c)"
+            counts[name, default: 0] += 1
+        }
+        return counts
+    }
+
     /// ARMeshAnchor 群を binary PLY で書く（Tier 1: 間取り・寸法・dollhouse 用）。
     /// 3DGS の学習には使わない。
+    ///
+    /// 面分類は **`mesh.ply` には混ぜず** `mesh_class.bin` に別で置く。
+    /// PLY の面要素にプロパティを足すとレコード長が 13 から 14 バイトに変わり、
+    /// 既存の読み手（`recon` と手元の解析）が全部ずれる。**増やすのは
+    /// ファイルだけにする。** 1 面 1 バイト、18 万面で 179KB。
     func writeMesh(anchors: [ARMeshAnchor]) throws {
         var vertices: [SIMD3<Float>] = []
         var faces: [(Int32, Int32, Int32)] = []
+        var classes: [UInt8] = []
 
         for anchor in anchors {
             let geometry = anchor.geometry
@@ -243,6 +269,18 @@ final class MDRWriter {
             for f in 0..<faceBuffer.count {
                 let o = f * faceBuffer.indexCountPerPrimitive
                 faces.append((base + indices[o], base + indices[o + 1], base + indices[o + 2]))
+            }
+
+            // 分類は面と同じ並び。取れないアンカーは none で埋めて、
+            // **面の本数と必ず一致させる**（ずれたら全部の対応が狂う）。
+            if let source = geometry.classification {
+                let raw = source.buffer.contents()
+                for f in 0..<faceBuffer.count {
+                    classes.append(raw.advanced(by: source.offset + source.stride * f)
+                        .assumingMemoryBound(to: UInt8.self).pointee)
+                }
+            } else {
+                classes.append(contentsOf: [UInt8](repeating: 0, count: faceBuffer.count))
             }
         }
 
@@ -275,5 +313,18 @@ final class MDRWriter {
             out.append(Data(bytes: &c, count: 4))
         }
         try out.write(to: bundleURL.appendingPathComponent("mesh.ply"))
+
+        guard classes.count == faces.count else { return }
+        try Data(classes).write(to: bundleURL.appendingPathComponent("mesh_class.bin"))
+        let summary: [String: Any] = [
+            "faces": faces.count,
+            "labels": MDRWriter.classNames,
+            "counts": MDRWriter.classHistogram(classes),
+            "note": "mesh.ply の面と同じ並びで 1 面 1 バイト。値は ARMeshClassification の生値。",
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: summary,
+                                                  options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: bundleURL.appendingPathComponent("mesh_class.json"))
+        }
     }
 }
