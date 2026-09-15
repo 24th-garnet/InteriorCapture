@@ -35,4 +35,39 @@ final class MDRWriterTests: XCTestCase {
     func testEmptyMeshGivesEmptyHistogram() {
         XCTAssertTrue(MDRWriter.classHistogram([]).isEmpty)
     }
+
+    /// **合流であって書き直しではない。** RoomPlan の統計を足すときに
+    /// 焼き込みの記録を消してしまうと、同居の可否を判断する材料が無くなる。
+    func testMergeKeepsTheExistingBakeRecord() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("bake.json")
+        try JSONSerialization.data(withJSONObject: [
+            "elapsed_sec": 1.47,
+            "stages_sec": ["unwrap": 0.054],
+        ]).write(to: url)
+
+        CaptureSession.mergeIntoBakeJSON(["roomplan": ["enabled": true, "walls": 4]], at: dir)
+
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: try Data(contentsOf: url)) as? [String: Any])
+        XCTAssertEqual(try XCTUnwrap(root["elapsed_sec"] as? Double), 1.47, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap((root["stages_sec"] as? [String: Any])?["unwrap"] as? Double),
+                       0.054, accuracy: 1e-9)
+        XCTAssertEqual((root["roomplan"] as? [String: Any])?["walls"] as? Int, 4)
+    }
+
+    /// 焼き込みが失敗して bake.json が無くても、RoomPlan の記録は残す。
+    func testMergeCreatesTheFileWhenMissing() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        CaptureSession.mergeIntoBakeJSON(["roomplan": ["enabled": false]], at: dir)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: try Data(contentsOf: dir.appendingPathComponent("bake.json"))) as? [String: Any])
+        XCTAssertEqual((root["roomplan"] as? [String: Any])?["enabled"] as? Bool, false)
+    }
 }

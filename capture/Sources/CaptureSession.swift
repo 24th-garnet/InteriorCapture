@@ -142,6 +142,25 @@ final class CaptureSession: NSObject, ObservableObject {
     /// プレビューの更新間隔（秒）。
     static let previewInterval: TimeInterval = 2.0
 
+    /// RoomPlan を同じ ARSession に同居させるか。
+    ///
+    /// **3D 生成の側は何も変えない。** 増えるのは `room.json` と、停止後に
+    /// `RoomBuilder` が回る時間だけ。焼き込みが終わってから走らせるので、
+    /// 焼き込み秒数は同居の有無で直接比べられる（`bake.json` の
+    /// `roomplan.build_sec` が同居のぶんの費用）。
+    ///
+    /// 家具を個体として取り出せるのは RoomPlan の境界箱だけ。ARKit の
+    /// 面分類はクラスしか返さず、語彙も 8 種類でベッドも収納も無い。
+    @Published var roomPlanEnabled = true
+
+    /// 同居させた RoomPlan。iOS 17 未満では常に nil。
+    private var roomPlanSidecarStorage: AnyObject?
+    @available(iOS 17.0, *)
+    fileprivate var roomPlanSidecar: RoomPlanSidecar? {
+        get { roomPlanSidecarStorage as? RoomPlanSidecar }
+        set { roomPlanSidecarStorage = newValue }
+    }
+
     /// プレビューの画角をカメラ本来の何倍に広げるか。
     ///
     /// **上下分割にすると覗き穴になる。** カメラ本来は縦 62.1 度 / 横 48.6 度
@@ -375,7 +394,11 @@ final class CaptureSession: NSObject, ObservableObject {
                     self.frameStore = store
                     Task { @MainActor in self.baker = try? OnDeviceBaker() }
                 }
-                self.publish { $0.state = .recording; $0.acceptedCount = 0; $0.elapsed = 0 }
+                self.publish {
+                    $0.state = .recording; $0.acceptedCount = 0; $0.elapsed = 0
+                    let session = $0
+                    MainActor.assumeIsolatedSafely { session.startRoomPlanIfEnabled() }
+                }
             } catch {
                 self.publish { $0.state = .failed(error.localizedDescription) }
             }
@@ -408,7 +431,11 @@ final class CaptureSession: NSObject, ObservableObject {
                 // この世代では splat を提供していない）。
                 self.bakeOnDevice(anchors: anchors, bundleURL: url)
 
-                self.publish { $0.state = .finished(url) }
+                // **焼き込みの後に締める。** 同時に走らせると焼き込み秒数が
+                // 濁り、同居の可否を判断できなくなる。
+                self.publish { s in
+                    MainActor.assumeIsolatedSafely { s.finishRoomPlan(bundleURL: url) }
+                }
             } catch {
                 self.publish { $0.state = .failed(error.localizedDescription) }
             }
@@ -419,6 +446,54 @@ final class CaptureSession: NSObject, ObservableObject {
     func acknowledge() {
         queue.async { [weak self] in
             self?.publish { $0.state = .idle }
+        }
+    }
+
+    /// RoomPlan を同じセッションに載せる。メインから呼ぶこと。
+    @MainActor
+    fileprivate func startRoomPlanIfEnabled() {
+        guard roomPlanEnabled, let session else { return }
+        guard #available(iOS 17.0, *) else { return }
+        let sidecar = RoomPlanSidecar()
+        sidecar.start(on: session)
+        roomPlanSidecar = sidecar
+    }
+
+    /// RoomPlan を締めて `room.json` を書き、統計を `bake.json` に合流させる。
+    /// 走っていなければ即座に完了する。
+    @MainActor
+    fileprivate func finishRoomPlan(bundleURL: URL) {
+        guard #available(iOS 17.0, *), let sidecar = roomPlanSidecar, sidecar.isRunning else {
+            // 同居していないことも記録する。**無しの標本が無いと比較できない。**
+            CaptureSession.mergeIntoBakeJSON(["roomplan": ["enabled": false]], at: bundleURL)
+            state = .finished(bundleURL)
+            return
+        }
+        bakeSummary = (bakeSummary.map { $0 + "\n" } ?? "") + "RoomPlan 処理中…"
+        Task { @MainActor in
+            let stats = await sidecar.finish(bundleURL: bundleURL)
+            self.roomPlanSidecar = nil
+            CaptureSession.mergeIntoBakeJSON(["roomplan": stats], at: bundleURL)
+            let walls = stats["walls"] as? Int ?? 0
+            let objects = stats["objects"] as? Int ?? 0
+            let sec = stats["build_sec"] as? Double ?? 0
+            self.bakeSummary = (self.bakeSummary?
+                .replacingOccurrences(of: "RoomPlan 処理中…", with: "") ?? "")
+                + String(format: "RoomPlan %.1f 秒 / 壁 %d / 物体 %d", sec, walls, objects)
+            self.state = .finished(bundleURL)
+        }
+    }
+
+    /// `bake.json` に後から項目を足す。**書き直しではなく合流。**
+    /// 焼き込み側の記録を壊さずに RoomPlan の費用を並べるため。
+    static func mergeIntoBakeJSON(_ extra: [String: Any], at bundleURL: URL) {
+        let url = bundleURL.appendingPathComponent("bake.json")
+        var root = (try? Data(contentsOf: url))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        for (k, v) in extra { root[k] = v }
+        if let data = try? JSONSerialization.data(withJSONObject: root,
+                                                  options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: url)
         }
     }
 

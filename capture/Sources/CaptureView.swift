@@ -183,6 +183,15 @@ struct CaptureView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 420)
+            // RoomPlan の同居。**3D 生成は変わらない。**増えるのは room.json と、
+            // 焼き込みの後に RoomBuilder が回る時間だけ。採否を決めるために
+            // 有無を切り替えて撮り比べられるようにしてある。
+            Toggle("RoomPlan 同居（家具の箱と開口部）", isOn: Binding(
+                get: { capture.roomPlanEnabled },
+                set: { capture.roomPlanEnabled = $0 }
+            ))
+            .toggleStyle(.button)
+            .font(.caption)
             recordButton(title: "録画開始", color: .red) { capture.startRecording() }
         case .recording:
             VStack(spacing: 8) {
