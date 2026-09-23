@@ -175,39 +175,10 @@ function drawPlan() {
     el('text', { x: 0, y: 0 }, g).textContent = o.label;
     objNodes.set(o.id, g);
   }
-  // 室名と内法面積。面積は基準 4.3(2)4)④ に合わせ、小数点以下第 2 位までとし
-  // 第 3 位以下を切り捨てる。
-  if (plan.floor && plan.floor.length > 2) {
-    const cx = plan.floor.reduce((a, p) => a + p[0], 0) / plan.floor.length;
-    const cz = plan.floor.reduce((a, p) => a + p[1], 0) / plan.floor.length;
-    const [tx, ty] = toScreen([cx, cz]);
-    el('text', { x: tx, y: ty - 0.16, class: 'roomname' }).textContent = plan.roomName || '';
-    const a = Math.floor((plan.area || 0) * 100) / 100;
-    el('text', { x: tx, y: ty + 0.16, class: 'roomarea' })
-      .textContent = a.toFixed(2) + ' m2';
-  }
-
-  // 全体寸法。3.5(1) 単位はミリメートル・単位記号は省略、桁区切りを入れる。
-  const dim = (a, b, off, label) => {
-    const [x1, y1] = toScreen(a), [x2, y2] = toScreen(b);
-    const horiz = Math.abs(y1 - y2) < 1e-6;
-    const ox = horiz ? 0 : off, oy = horiz ? off : 0;
-    el('path', { class: 'dimline',
-      d: `M ${x1 + ox} ${y1 + oy} L ${x2 + ox} ${y2 + oy}` });
-    el('text', { class: 'dimtext', x: (x1 + x2) / 2 + ox, y: (y1 + y2) / 2 + oy - 0.06,
-                 transform: horiz ? '' :
-                   `rotate(-90 ${(x1 + x2) / 2 + ox} ${(y1 + y2) / 2 + oy})` })
-      .textContent = label;
-  };
-  const mm = v => Math.round(v * 1000).toLocaleString('en-US');
-  dim([LX, 0], [LX, LZ], -0.32, mm(LZ));
-  dim([0, 0], [LX, 0], -0.32, mm(LX));
-
   const y = LX + M * 0.45;
   el('path', { class: 'scalebar',
     d: `M 0 ${y} H 1 M 0 ${y - .06} V ${y + .06} M 1 ${y - .06} V ${y + .06}` });
-  el('text', { x: 1.12, y: y + .06, class: 'scaletext' })
-    .textContent = '1 m   S=1/100（A3 印刷時）';
+  el('text', { x: 1.12, y: y + .06, class: 'scaletext' }).textContent = '1 m';
   svg.querySelectorAll('.obj').forEach(g => {
     g.addEventListener('pointerdown', onDown);
     g.addEventListener('pointermove', onMove);
