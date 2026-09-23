@@ -315,7 +315,8 @@ def cmd_web(args) -> int:
     """手元の Web アプリを起動する。**撮影済みバンドルの管理・平面図・配置。**"""
     from . import webapp
 
-    webapp.serve(args.root, port=args.port, host=args.host)
+    webapp.serve(args.root, port=args.port, host=args.host,
+                 token=args.token, read_only=args.read_only)
     return 0
 
 
@@ -366,7 +367,12 @@ def main(argv: list[str] | None = None) -> int:
     wb.add_argument("root", nargs="?", default="~/madoriba-lab/bundles",
                     help="`.mdr` を置いたディレクトリ")
     wb.add_argument("--port", type=int, default=8765)
-    wb.add_argument("--host", default="127.0.0.1")
+    wb.add_argument("--host", default="127.0.0.1",
+                    help="0.0.0.0 にすると同じ LAN から見える。合言葉が要る")
+    wb.add_argument("--token", default=None,
+                    help="合言葉。省略時は MADORIBA_TOKEN、外向きなら自動生成")
+    wb.add_argument("--read-only", action="store_true",
+                    help="書き込みを受け付けない（閲覧だけ配るとき）")
     wb.set_defaults(func=cmd_web)
 
     ar = sub.add_parser("arrange", help="RoomPlan の箱で家具を切り分け、動かす")

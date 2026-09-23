@@ -62,3 +62,82 @@ def test_bundle_without_bake_is_fine(tmp_path):
     s = webapp.scan_list(tmp_path)[0]
     assert s["hasVertexColor"] is False
     assert "bakeSec" not in s or s["bakeSec"] is None
+
+
+# --- 合言葉 -----------------------------------------------------------------
+#
+# **ここが破れると他人のスキャンを書き換えられる。** このアプリは
+# moves.json と arranged.ply を書くので、外向きに出すなら必須。
+
+import threading
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+
+import pytest
+
+
+def run_server(tmp_path, token="", read_only=False):
+    webapp.Handler.root = tmp_path
+    webapp.Handler.token = token
+    webapp.Handler.read_only = read_only
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def get(url, token=None):
+    req = urllib.request.Request(url)
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def post(url, token=None, body=b"{}"):
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def test_token_gates_every_route(tmp_path):
+    make(tmp_path, "room-a.mdr", manifest={"created_at": "2026-09-01T00:00:00"})
+    srv, base = run_server(tmp_path, token="secret")
+    try:
+        assert get(f"{base}/api/scans") == 401
+        assert get(f"{base}/api/scans", "wrong") == 401
+        assert get(f"{base}/api/scans", "secret") == 200
+        assert post(f"{base}/api/scans/room-a.mdr/moves") == 401
+    finally:
+        srv.shutdown()
+
+
+def test_read_only_refuses_writes(tmp_path):
+    make(tmp_path, "room-a.mdr", manifest={"created_at": "2026-09-01T00:00:00"})
+    srv, base = run_server(tmp_path, token="secret", read_only=True)
+    try:
+        assert get(f"{base}/api/scans", "secret") == 200
+        assert post(f"{base}/api/scans/room-a.mdr/moves", "secret",
+                    b'{"moved":[]}') == 403
+        assert not (tmp_path / "room-a.mdr" / "moves.json").exists()
+    finally:
+        srv.shutdown()
+
+
+def test_cannot_escape_the_root(tmp_path):
+    make(tmp_path, "room-a.mdr", manifest={"created_at": "2026-09-01T00:00:00"})
+    srv, base = run_server(tmp_path)
+    try:
+        assert get(f"{base}/api/scans/..%2f..%2fetc/plan") == 404
+        assert get(f"{base}/api/scans/nope.mdr/plan") == 404
+    finally:
+        srv.shutdown()

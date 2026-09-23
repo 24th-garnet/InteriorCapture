@@ -18,17 +18,19 @@ iPad / iPhone のアプリが書き出した `.mdr` を置いたディレクト�
 """
 from __future__ import annotations
 
+import hmac
 import json
 import math
 import mimetypes
-import shutil
+import os
+import secrets
 import threading
 import traceback
 from dataclasses import asdict
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 
@@ -38,6 +40,8 @@ from .mesh import Mesh, read_ply_mesh
 WEB_ROOT = Path(__file__).parent / "web"
 #: 重い処理を同時に走らせない。1 台の Mac で 1 人が使う前提。
 _build_lock = threading.Lock()
+#: 合言葉を載せる cookie の名前。
+COOKIE = "madoriba_token"
 
 
 # --- バンドルの読み取り -----------------------------------------------------
@@ -226,7 +230,41 @@ def apply_moves(bundle: Path, moves_doc: dict) -> dict:
 
 class Handler(BaseHTTPRequestHandler):
     root: Path = Path(".")
+    #: 合言葉。空なら認証しない（localhost 専用のときだけ）。
+    token: str = ""
+    #: 書き込みを禁じる。閲覧だけ配るときに使う。
+    read_only: bool = False
     server_version = "madoriba-web"
+
+    def _authorized(self) -> bool:
+        """合言葉を照合する。**時間差で漏れないよう `compare_digest` を使う。**
+
+        受け口は 3 つ。cookie（普段）、`Authorization: Bearer`（API 直叩き）、
+        クエリ `?token=`（最初の 1 回。cookie に移して URL から消す）。
+        """
+        if not self.token:
+            return True
+        got = ""
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            got = auth[7:]
+        if not got:
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == COOKIE:
+                    got = v
+        if not got:
+            got = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+        return hmac.compare_digest(got, self.token)
+
+    def _deny(self) -> None:
+        body = ("合言葉が要ります。起動時に表示された URL "
+                "（?token=… 付き）を開いてください。").encode()
+        self.send_response(401)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, fmt, *args):      # noqa: A003
         pass                                 # アクセスログは出さない
@@ -263,8 +301,19 @@ class Handler(BaseHTTPRequestHandler):
     # -- ルーティング
 
     def do_GET(self) -> None:                # noqa: N802
+        if not self._authorized():
+            return self._deny()
         p = unquote(urlparse(self.path).path)
         try:
+            # クエリで来た合言葉は cookie に移す。URL に残ると共有事故になる。
+            q = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+            if q and p in ("/", "/index.html"):
+                self.send_response(302)
+                self.send_header("Set-Cookie",
+                                 f"{COOKIE}={q}; Path=/; HttpOnly; SameSite=Strict")
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
             if p == "/" or p == "/index.html":
                 return self._file(WEB_ROOT / "index.html")
             if p.startswith("/static/"):
@@ -299,6 +348,10 @@ class Handler(BaseHTTPRequestHandler):
         self._write()
 
     def _write(self) -> None:
+        if not self._authorized():
+            return self._deny()
+        if self.read_only:
+            return self._json({"error": "閲覧専用で動いています"}, 403)
         p = unquote(urlparse(self.path).path)
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -321,9 +374,29 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
 
 
-def serve(root: str | Path, port: int = 8765, host: str = "127.0.0.1") -> None:
+def serve(root: str | Path, port: int = 8765, host: str = "127.0.0.1",
+          token: str | None = None, read_only: bool = False) -> None:
+    """起動する。
+
+    **localhost 以外へ出すときは合言葉を必ず付ける。** このアプリは
+    `moves.json` と `arranged.ply` を書くので、無防備に晒すと誰でも
+    他人のスキャンを書き換えられる。合言葉が無いまま外向きに開こうと
+    したら起動を止める。
+    """
     Handler.root = Path(root).expanduser().resolve()
+    Handler.read_only = read_only
+
+    local = host in ("127.0.0.1", "localhost", "::1")
+    tok = token or os.environ.get("MADORIBA_TOKEN") or ""
+    if not local and not tok:
+        tok = secrets.token_urlsafe(16)
+        print("外向きに開くので合言葉を作りました。この URL を共有してください。")
+    Handler.token = tok
+
     n = len(list(Handler.root.glob("*.mdr")))
-    print(f"バンドル {n} 件  {Handler.root}")
-    print(f"http://{host}:{port}/")
+    print(f"バンドル {n} 件  {Handler.root}", flush=True)
+    if read_only:
+        print("閲覧専用（書き込みを受け付けません）")
+    shown = f"http://{host}:{port}/" + (f"?token={tok}" if tok else "")
+    print(shown, flush=True)
     ThreadingHTTPServer((host, port), Handler).serve_forever()
