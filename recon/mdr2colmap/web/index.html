@@ -44,12 +44,13 @@
           <div class="pane-head">
             <span>3D</span>
             <span class="tools">
+              <label><input type="checkbox" id="cull" checked> 裏面を透過</label>
               <button id="vTop">上から</button>
               <button id="vIso">斜め</button>
             </span>
           </div>
           <div class="stage view"><canvas id="gl"></canvas>
-            <p class="loading" id="gl-note">選択すると読み込みます</p></div>
+            <p class="loading" id="gl-note" hidden></p></div>
         </section>
       </div>
 

@@ -60,8 +60,9 @@ async function select(id) {
   document.getElementById('content').hidden = false;
   document.getElementById('title').textContent = id.replace('.mdr', '');
   setStatus('');
-  document.getElementById('gl-note').textContent = '3D を読み込み中…';
-  document.getElementById('gl-note').hidden = false;
+  // 読み込み中の表示は出さない。キャッシュ済みなら一瞬で、
+  // 出しても点滅するだけだった。失敗したときだけ `gl-note` を使う。
+  document.getElementById('gl-note').hidden = true;
 
   const s = await api(`/api/scans/${id}`);
   document.getElementById('subtitle').textContent =
@@ -124,8 +125,6 @@ function drawPlan() {
     return el('line', { x1, y1, x2, y2, class: cls }, parent);
   };
 
-  if (plan.floor && plan.floor.length > 2) poly(plan.floor, 'room-fill');
-
   const T = 0.12;                           // 壁厚は作図上の仮定
   for (const w of plan.walls) {
     const dx = w.b[0] - w.a[0], dz = w.b[1] - w.a[1];
@@ -139,16 +138,26 @@ function drawPlan() {
     let cur = 0;
     for (const [s, e, cat] of spans.concat([[L, L, null]])) {
       if (s > cur) {
+        // 壁は平行 2 本線（別表2 の材料構造表示記号は材料が分からないので使わない）
         const p = at(cur), q = at(s);
-        poly([off(p, T / 2), off(q, T / 2), off(q, -T / 2), off(p, -T / 2)], 'wall');
+        line(off(p, T / 2), off(q, T / 2), 'wall');
+        line(off(p, -T / 2), off(q, -T / 2), 'wall');
+        if (cur === 0) line(off(p, T / 2), off(p, -T / 2), 'wall');
+        if (s >= L) line(off(q, T / 2), off(q, -T / 2), 'wall');
       }
       if (cat === null) break;
       const p = at(s), q = at(e);
       if (cat === 'window') {
-        for (const k of [0.5, 0.17, -0.17, -0.5]) line(off(p, T * k), off(q, T * k), 'win');
+        // 別表1「窓一般」。壁厚の中を平行線で通す。
+        for (const k of [0.5, -0.5]) line(off(p, T * k), off(q, T * k), 'wall');
+        for (const k of [0.15, -0.15]) line(off(p, T * k), off(q, T * k), 'win');
       } else {
+        // 別表1「出入口一般」。**建具の種別が出ないので開き勝手は描かない。**
+        // RoomPlan は扉の寸法しか返さず、吊元も開く向きも引違いの別も持たない。
         line(off(p, T / 2), off(p, -T / 2), 'jamb');
         line(off(q, T / 2), off(q, -T / 2), 'jamb');
+        const mid = at((s + e) / 2);
+        line(off(mid, T / 2), off(mid, -T / 2), 'door-bar');
       }
       cur = e;
     }
@@ -166,10 +175,39 @@ function drawPlan() {
     el('text', { x: 0, y: 0 }, g).textContent = o.label;
     objNodes.set(o.id, g);
   }
+  // 室名と内法面積。面積は基準 4.3(2)4)④ に合わせ、小数点以下第 2 位までとし
+  // 第 3 位以下を切り捨てる。
+  if (plan.floor && plan.floor.length > 2) {
+    const cx = plan.floor.reduce((a, p) => a + p[0], 0) / plan.floor.length;
+    const cz = plan.floor.reduce((a, p) => a + p[1], 0) / plan.floor.length;
+    const [tx, ty] = toScreen([cx, cz]);
+    el('text', { x: tx, y: ty - 0.16, class: 'roomname' }).textContent = plan.roomName || '';
+    const a = Math.floor((plan.area || 0) * 100) / 100;
+    el('text', { x: tx, y: ty + 0.16, class: 'roomarea' })
+      .textContent = a.toFixed(2) + ' m2';
+  }
+
+  // 全体寸法。3.5(1) 単位はミリメートル・単位記号は省略、桁区切りを入れる。
+  const dim = (a, b, off, label) => {
+    const [x1, y1] = toScreen(a), [x2, y2] = toScreen(b);
+    const horiz = Math.abs(y1 - y2) < 1e-6;
+    const ox = horiz ? 0 : off, oy = horiz ? off : 0;
+    el('path', { class: 'dimline',
+      d: `M ${x1 + ox} ${y1 + oy} L ${x2 + ox} ${y2 + oy}` });
+    el('text', { class: 'dimtext', x: (x1 + x2) / 2 + ox, y: (y1 + y2) / 2 + oy - 0.06,
+                 transform: horiz ? '' :
+                   `rotate(-90 ${(x1 + x2) / 2 + ox} ${(y1 + y2) / 2 + oy})` })
+      .textContent = label;
+  };
+  const mm = v => Math.round(v * 1000).toLocaleString('en-US');
+  dim([LX, 0], [LX, LZ], -0.32, mm(LZ));
+  dim([0, 0], [LX, 0], -0.32, mm(LX));
+
   const y = LX + M * 0.45;
   el('path', { class: 'scalebar',
     d: `M 0 ${y} H 1 M 0 ${y - .06} V ${y + .06} M 1 ${y - .06} V ${y + .06}` });
-  el('text', { x: 1.12, y: y + .06, class: 'scaletext' }).textContent = '1 m';
+  el('text', { x: 1.12, y: y + .06, class: 'scaletext' })
+    .textContent = '1 m   S=1/100（A3 印刷時）';
   svg.querySelectorAll('.obj').forEach(g => {
     g.addEventListener('pointerdown', onDown);
     g.addEventListener('pointermove', onMove);
@@ -181,6 +219,8 @@ function drawPlan() {
 // --- 3D ---------------------------------------------------------------------
 
 let renderer, scene, camera, hemi, dirLight, meshes = new Map(), pickable = [];
+let materials = [];          // 裏面の扱いを一括で切り替えるため
+let cullBack = true;
 let cam = { r: 15, theta: -0.9, phi: 1.02 }, target = new THREE.Vector3();
 let needs = true;
 
@@ -230,7 +270,7 @@ async function loadGeom(id) {
   initGL();
   if (!renderer) return;
   for (const [, m] of meshes) scene.remove(m.mesh);
-  meshes = new Map(); pickable = [];
+  meshes = new Map(); pickable = []; materials = [];
   scene.children.filter(o => o.isMesh).forEach(o => scene.remove(o));
   const g = await api(`/api/scans/${id}/geom`);
   if (id !== current) return;                 // 別のスキャンへ移った
@@ -245,8 +285,12 @@ async function loadGeom(id) {
     geo.setIndex(new THREE.BufferAttribute(dec(part.idx, Uint32Array), 1));
     if (part.kind === 'object') geo.translate(-part.c[0], 0, -part.c[2]);
     geo.computeVertexNormals();
+    // **裏面を描かない。** ARKit のメッシュは法線が室内側を向くので、
+    // 外から見ると手前の壁が消えて中が見える。両面で描くと箱の外側しか
+    // 見えず、間取りの確認に使えない。
     const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
-      vertexColors: true, side: THREE.DoubleSide }));
+      vertexColors: true, side: cullBack ? THREE.FrontSide : THREE.DoubleSide }));
+    materials.push(mesh.material);
     if (part.kind === 'object') {
       mesh.position.set(part.c[0], 0, part.c[2]);
       mesh.userData.id = part.id;
@@ -392,6 +436,14 @@ document.getElementById('resetOne').onclick = () => {
 document.getElementById('resetAll').onclick = () => {
   for (const o of (plan.objects || [])) state.set(o.id, { dx: 0, dz: 0, dyaw: 0 });
   dirty = true; place();
+};
+document.getElementById('cull').onchange = e => {
+  cullBack = e.target.checked;
+  for (const m of materials) {
+    m.side = cullBack ? THREE.FrontSide : THREE.DoubleSide;
+    m.needsUpdate = true;
+  }
+  draw();
 };
 document.getElementById('vTop').onclick = () => { cam.phi = .14; cam.theta = -Math.PI / 2; draw(); };
 document.getElementById('vIso').onclick = () => { cam.phi = 1.02; cam.theta = -.9; draw(); };

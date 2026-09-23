@@ -76,22 +76,37 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
            justify-content: center; margin: 0; color: var(--faint);
            font-family: var(--mono); font-size: 12px; pointer-events: none; }
 
-/* 図面の記号（JIS A 0150）。単位はメートル。 */
-.room-fill { fill: var(--room); }
-.wall { fill: var(--paper); stroke: var(--ink); stroke-width: .026; }
-.win { fill: none; stroke: var(--window); stroke-width: .022; }
-.jamb { stroke: var(--ink); stroke-width: .026; }
-.ghost { fill: none; stroke: var(--rule); stroke-width: .018;
+/* 建築工事設計図書作成基準（令和2年改定）別表1 の平面表示記号。単位はメートル。
+   3.3(2) 線幅は極太線・太線・細線の 3 種類。A1 の組合せ 2（0.5 / 0.25 / 0.13mm）を
+   縮尺 1/100 で実寸に直した比率で使う。3.3(4) により塗りつぶしは行わない。 */
+:root {
+  --w-thick: 0.05;    /* 極太線 */
+  --w-mid:   0.025;   /* 太線   */
+  --w-thin:  0.013;   /* 細線   */
+}
+.wall { fill: none; stroke: var(--ink); stroke-width: 0.025; }   /* 壁は平行 2 本線 */
+.win { fill: none; stroke: var(--ink); stroke-width: 0.013; }    /* 窓一般 */
+.jamb { stroke: var(--ink); stroke-width: 0.025; }               /* 出入口の方立 */
+.door-bar { stroke: var(--ink); stroke-width: 0.013; }           /* 出入口一般の中央線 */
+.ghost { fill: none; stroke: var(--rule); stroke-width: 0.013;
          stroke-dasharray: .09 .07; }
-.obj rect { fill: var(--paper); fill-opacity: .55; stroke: var(--soft);
-            stroke-width: .026; cursor: grab; }
+.obj rect { fill: none; stroke: var(--soft); stroke-width: 0.013; cursor: grab; }
 .obj.moved rect { stroke: var(--moved); }
-.obj.sel rect { stroke: var(--pick); stroke-width: .05; }
-.obj text { font-family: var(--jp); font-size: .15px; fill: var(--faint);
+.obj.sel rect { stroke: var(--pick); stroke-width: 0.03; }
+.obj text { font-family: var(--jp); font-size: .13px; fill: var(--faint);
             text-anchor: middle; dominant-baseline: middle;
             pointer-events: none; user-select: none; }
-.scalebar { fill: none; stroke: var(--soft); stroke-width: .014; }
-.scaletext { font-family: var(--mono); font-size: .19px; fill: var(--faint); }
+/* 3.2 文字はゴシック体。室名は一般文字より大きく。 */
+.roomname { font-family: var(--jp); font-size: .22px; fill: var(--ink);
+            text-anchor: middle; dominant-baseline: middle; }
+.roomarea { font-family: var(--mono); font-size: .15px; fill: var(--soft);
+            text-anchor: middle; dominant-baseline: middle; }
+/* 3.5 寸法は寸法線に添えて横書き。単位 mm・単位記号は省略。 */
+.dimline { fill: none; stroke: var(--rule); stroke-width: 0.013; }
+.dimtext { font-family: var(--mono); font-size: .16px; fill: var(--soft);
+           text-anchor: middle; }
+.scalebar { fill: none; stroke: var(--soft); stroke-width: 0.013; }
+.scaletext { font-family: var(--mono); font-size: .16px; fill: var(--faint); }
 
 .bar { display: flex; gap: 9px; align-items: center; flex-wrap: wrap;
        padding: 12px 0 4px; }
