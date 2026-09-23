@@ -311,6 +311,14 @@ def cmd_texture(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args) -> int:
+    """手元の Web アプリを起動する。**撮影済みバンドルの管理・平面図・配置。**"""
+    from . import webapp
+
+    webapp.serve(args.root, port=args.port, host=args.host)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="mdr2colmap",
@@ -353,6 +361,13 @@ def main(argv: list[str] | None = None) -> int:
     tx.add_argument("--view-exponent", type=float, default=2.0,
                     help="大きいほど最良の 1 視点に寄り鮮鋭になる")
     tx.set_defaults(func=cmd_texture)
+
+    wb = sub.add_parser("web", help="手元でスキャンを管理する Web アプリを起動する")
+    wb.add_argument("root", nargs="?", default="~/madoriba-lab/bundles",
+                    help="`.mdr` を置いたディレクトリ")
+    wb.add_argument("--port", type=int, default=8765)
+    wb.add_argument("--host", default="127.0.0.1")
+    wb.set_defaults(func=cmd_web)
 
     ar = sub.add_parser("arrange", help="RoomPlan の箱で家具を切り分け、動かす")
     ar.add_argument("bundle", help="MDR バンドル（room.json と mesh.ply を含む）")
