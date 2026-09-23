@@ -288,6 +288,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        # **キャッシュさせない。** 手元で書き換えながら使う道具なので、
+        # 直したのに古いまま、が一番困る。ETag も Last-Modified も出さない
+        # ため、付けないとブラウザが独自の判断で使い回す。
+        self.send_header("Cache-Control", "no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(data)
 
