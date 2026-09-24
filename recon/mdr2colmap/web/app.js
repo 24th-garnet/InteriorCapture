@@ -193,8 +193,6 @@ let renderer, scene, camera, hemi, dirLight, meshes = new Map(), pickable = [];
 let materials = [];          // 裏面の扱いを一括で切り替えるため
 let cullBack = true;
 let boxes = new Map();       // RoomPlan の境界箱（線分）
-const floorPlane = typeof THREE !== 'undefined'
-  ? new THREE.Plane(new THREE.Vector3(0, 1, 0), 0) : null;
 const cssColor = name =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 let cam = { r: 15, theta: -0.9, phi: 1.02 }, target = new THREE.Vector3();
@@ -215,38 +213,17 @@ function initGL() {
   dirLight.position.set(3, 8, 2);
   scene.add(hemi, dirLight);
   new ResizeObserver(() => { resizeGL(); draw(); }).observe(canvas.parentElement);
-  // **家具の上で押したら掴む。それ以外は視点を回す。**
+  // **3D からは動かさない。** 視点の操作と選択だけ。配置を変えるのは
+  // 平面図の側だけにして、3D はその結果を映す。掴めるようにすると、
+  // 掴んだ点と床面の交点で決まるぶん視点によって量が変わり、平面図で
+  // 見ている数値と食い違う。鉛直方向の移動も持たない（家具は床に
+  // 置いたままとする）。
   canvas.addEventListener('pointerdown', e => {
     canvas.setPointerCapture(e.pointerId);
-    const id = objectAt(e);
-    if (id && state.has(id)) {
-      sel = id;
-      const p = floorPoint(e), m = state.get(id);
-      if (p) { grab = { id, start: p, base: { dx: m.dx, dz: m.dz } }; canvas.style.cursor = 'grabbing'; }
-      place();
-      return;
-    }
     orbit = { x: e.clientX, y: e.clientY, t: cam.theta, p: cam.phi, moved: false };
   });
   canvas.addEventListener('pointermove', e => {
-    if (grab) {
-      const p = floorPoint(e);
-      if (!p) return;
-      let dx = grab.base.dx + (p.x - grab.start.x);
-      let dz = grab.base.dz + (p.z - grab.start.z);
-      if (document.getElementById('snap').checked) {
-        dx = Math.round(dx / 0.05) * 0.05; dz = Math.round(dz / 0.05) * 0.05;
-      }
-      const m = state.get(grab.id);
-      m.dx = dx; m.dz = dz;
-      dirty = true;
-      place();
-      return;
-    }
-    if (!orbit) {
-      canvas.style.cursor = objectAt(e) ? 'grab' : 'default';
-      return;
-    }
+    if (!orbit) return;
     const dx = e.clientX - orbit.x, dy = e.clientY - orbit.y;
     if (Math.abs(dx) + Math.abs(dy) > 3) orbit.moved = true;
     cam.theta = orbit.t + dx * 0.006;
@@ -254,17 +231,16 @@ function initGL() {
     draw();
   });
   canvas.addEventListener('pointerup', e => {
-    if (!grab && orbit && !orbit.moved) { sel = objectAt(e); place(); }
-    grab = null; orbit = null; canvas.style.cursor = 'default';
+    if (orbit && !orbit.moved) { sel = objectAt(e); place(); }
+    orbit = null;
   });
-  canvas.addEventListener('pointercancel', () => { grab = null; orbit = null; });
+  canvas.addEventListener('pointercancel', () => { orbit = null; });
   canvas.addEventListener('wheel', e => {
     e.preventDefault(); cam.r *= Math.exp(e.deltaY * 0.0012); draw();
   }, { passive: false });
   loop();
 }
 let orbit = null;
-let grab = null;      // 3D で掴んでいる家具
 
 function dec(b64, Type) {
   const s = atob(b64), n = s.length, u = new Uint8Array(n);
@@ -358,16 +334,6 @@ function addBox(part) {
 }
 
 const ray = typeof THREE !== 'undefined' ? new THREE.Raycaster() : null;
-
-/** 画面の点から床面（Y=0）の交点を返す。掴んだ家具を滑らせるのに使う。 */
-function floorPoint(e) {
-  const r = canvas.getBoundingClientRect();
-  ray.setFromCamera(new THREE.Vector2(
-    ((e.clientX - r.left) / r.width) * 2 - 1,
-    -((e.clientY - r.top) / r.height) * 2 + 1), camera);
-  const hit = new THREE.Vector3();
-  return ray.ray.intersectPlane(floorPlane, hit) ? hit : null;
-}
 
 /** 画面の点の下にある家具の id。無ければ null。 */
 function objectAt(e) {
