@@ -147,10 +147,24 @@ def build(bundle: str | Path, face_budget: int = FACE_BUDGET) -> dict:
         if len(f) == 0:
             continue
         cxz = np.array([b.center[0], b.center[2]]) @ R.T
+        # RoomPlan の向き付き境界箱を、3D と同じ枠へ落として渡す。
+        #
+        # **符号の取り違えを避けるため、向きは JS で組み立てない。** 箱の軸から
+        # 隅の座標をここで出し、中心からの相対で渡す。JS 側は中心に置いて
+        # dyaw だけ回せばよく、回転の向きを推し量る必要がなくなる。
+        corner = []
+        for sx, sz in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+            w = b.center + b.axes[:, 0] * b.half[0] * sx + b.axes[:, 2] * b.half[2] * sz
+            q = np.array([w[0], w[2]]) @ R.T
+            corner.append([round(float(q[0] - x0 - (cxz[0] - x0)), 4),
+                           round(float(q[1] - z0 - (cxz[1] - z0)), 4)])
         parts.append(dict(
             id=b.identifier, label=FURNITURE_JA.get(b.category, b.category),
             category=b.category, confidence=b.confidence, kind="object",
             c=[round(float(cxz[0] - x0), 4), 0.0, round(float(cxz[1] - z0), 4)],
+            box=dict(pts=corner,
+                     y0=round(float(b.center[1] - b.half[1] - floor_y), 4),
+                     h=round(float(b.half[1] * 2), 4)),
             faces=len(f),
             pos=_b64(p.astype("<f4")), col=_b64(c.round().astype("u1")),
             idx=_b64(f.astype("<u4"))))
