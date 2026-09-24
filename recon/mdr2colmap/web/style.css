@@ -86,7 +86,10 @@ label { font-family: var(--mono); font-size: 12.5px; color: var(--soft);
 .door-bar { stroke: var(--ink); stroke-width: 0.013; }           /* 出入口一般の中央線 */
 .ghost { fill: none; stroke: var(--rule); stroke-width: 0.013;
          stroke-dasharray: .09 .07; }
-.obj rect { fill: none; stroke: var(--soft); stroke-width: 0.013; cursor: grab; }
+.obj rect { fill: none; stroke: var(--soft); stroke-width: 0.013; cursor: grab;
+            /* **塗りが無いと内側が当たり判定を持たない。** 3.3(4) に従って
+               塗りつぶしをやめたら、線の上でしか掴めなくなった。 */
+            pointer-events: all; }
 .obj.moved rect { stroke: var(--moved); }
 .obj.sel rect { stroke: var(--pick); stroke-width: 0.03; }
 .obj text { font-family: var(--jp); font-size: .13px; fill: var(--faint);
