@@ -121,7 +121,7 @@ ARKit の自動露出が ISO を 160〜1600 の間で動かしており、窓を
 ### 解き方
 
 同じ 3 次元点を見ている全フレームで、その点が同じ色になるゲインを解く。
-詳細は `recon/mdr2colmap/photometric.py`。
+詳細は CaptureVisualizer の `mdr2colmap/photometric.py`。
 
 求まったゲインは **EXIF の ISO と相関 0.92**。カメラが実際に行った露出補正を
 復元していることが確認できる。

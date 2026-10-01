@@ -32,14 +32,20 @@ LiDAR 点群が「密でメートル正解な初期値」と「depth supervision
 ## ディレクトリ
 
 ```
-capture/   A. madoriba-capture — iPadOS 撮影アプリ（Swift）
-recon/     B. madoriba-recon   — macOS 復元パイプライン
-tour/      C. madoriba-tour    — ツアービューア
-spec/      MDR バンドル仕様（capture と recon の唯一の契約）
+capture/   madoriba-capture — iPhone / iPad 撮影アプリ（Swift）
+spec/      MDR バンドル仕様（撮影アプリと Mac 側の唯一の契約）
+tour/      旧ツアービューア（3DGS を畳んだ時点で停止）
 tools/     ベンチマーク・変換スクリプト
 docs/      設計ドキュメント
 vendor/    外部リポジトリ（gitignore 済み）
 ```
+
+Mac 側（平面図・編集・3D・DXF）は別リポジトリへ移した。
+
+**<https://github.com/24th-garnet/CaptureVisualizer>**
+
+このリポジトリは `.mdr` バンドルを**作る**側だけを持つ。バンドルを**使う**側は
+すべて CaptureVisualizer にある。
 
 ## ドキュメント
 

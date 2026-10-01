@@ -27,7 +27,7 @@ xcodebuild -project MadoribaCapture.xcodeproj -scheme MadoribaCapture \
 
 ## 設計原則
 
-1. **ARKit の生値をそのまま保存する。** 座標変換は recon 側に一元化する。
+1. **ARKit の生値をそのまま保存する。** 座標変換は Mac 側（CaptureVisualizer）に一元化する。
    capture 側で変換すると、バグが見つかったときに再撮影が必要になる。
 2. **画像を回転させない。** `capturedImage` は常にセンサ native の向きで、
    `intrinsics` もその向きに対応する。native のまま通すことで座標系バグを原理的に避ける。
