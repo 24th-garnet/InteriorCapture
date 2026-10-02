@@ -1,7 +1,11 @@
-# scaniverse_mimic
+# InteriorCapture
 
-Scaniverse 相当の**内装スキャン**体験を、LiDAR 搭載 iPad Pro と Apple Silicon Mac のローカル環境だけで実現する。
-最終目標は、復元結果をそのまま**内装 3D ツアー**に使える解像度で、可能な限り高速に得ること。
+LiDAR 搭載の iPhone / iPad で**内装をスキャン**し、`.mdr` バンドルとして取り出す
+撮影アプリ。Scaniverse 相当の体験を、端末だけで完結させることを目指している。
+
+バンドルを**使う**側（平面図・編集・3D・歩行・DXF）は別リポジトリにある。
+
+**<https://github.com/24th-garnet/CaptureVisualizer>**
 
 ## 構成
 

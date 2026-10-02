@@ -1,4 +1,4 @@
-# madoriba / scaniverse_mimic 開発パイプライン仕様
+# madoriba / InteriorCapture 開発パイプライン仕様
 
 策定日: 2026-08-21
 対象ハード: iPad Pro 2020（A12Z, LiDAR）＝撮影機 / MacBook Pro M1 Max ＝復元エンジン

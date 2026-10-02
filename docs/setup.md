@@ -184,10 +184,10 @@ git clone https://github.com/scier/MetalSplatter.git         # ビューア
 
 ## F. プロジェクト自体の初期化
 
-**`scaniverse_mimic` はまだ git リポジトリになっていない。** 最初にやる:
+**`InteriorCapture`（旧 `scaniverse_mimic`）はまだ git リポジトリになっていない。** 最初にやる:
 
 ```bash
-cd ~/projects/madoriba/scaniverse_mimic
+cd ~/projects/madoriba/InteriorCapture
 git init
 ```
 

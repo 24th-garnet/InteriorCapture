@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/24th-garnet/scaniverse_mimic/spec/mdr-v1.schema.json",
+  "$id": "https://github.com/24th-garnet/InteriorCapture/spec/mdr-v1.schema.json",
   "title": "MDR v1 bundle",
   "description": "madoriba recording bundle. capture(iPadOS) と recon(macOS) の契約。仕様は spec/mdr-v1.md を参照。",
   "$defs": {
