@@ -41,7 +41,7 @@ iOS 17 の `RoomCaptureSession(arSession:)` で MDR 撮影と同じセッショ�
 3D モデルに重ねる位置合わせが不要になる（床の高さの差 3.4cm で確認）。
 
 **RoomPlan は共有セッションから `sceneDepth` を落とす。** 起動 2 秒後に
-再適用して回避している（`capture/Sources/RoomScan.swift`）。
+再適用して回避している（`IrwinCo/madoriba-ios` の `capture/Sources/RoomPlanSidecar.swift`）。
 
 ## 次に効くのは撮影側
 

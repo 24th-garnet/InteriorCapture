@@ -1,11 +1,17 @@
 # InteriorCapture
 
-LiDAR 搭載の iPhone / iPad で**内装をスキャン**し、`.mdr` バンドルとして取り出す
-撮影アプリ。Scaniverse 相当の体験を、端末だけで完結させることを目指している。
+LiDAR 搭載の iPhone / iPad で**内装をスキャン**し、`.mdr` バンドルとして取り出す仕組み。
+Scaniverse 相当の体験を、端末だけで完結させることを目指している。
 
-バンドルを**使う**側（平面図・編集・3D・歩行・DXF）は別リポジトリにある。
+このリポジトリが持つのは **`.mdr` の仕様と設計の記録だけ**。動くコードは別リポジトリにある。
 
-**<https://github.com/24th-garnet/CaptureVisualizer>**
+| | リポジトリ | 公開 |
+|---|---|---|
+| **撮る**（madoriba capture — iPhone / iPad 撮影アプリ） | [IrwinCo/madoriba-ios](https://github.com/IrwinCo/madoriba-ios) | 非公開 |
+| **使う**（平面図・編集・3D・歩行・DXF） | [24th-garnet/CaptureVisualizer](https://github.com/24th-garnet/CaptureVisualizer) | 公開 |
+
+撮影アプリは 2026 年 10 月に `IrwinCo/madoriba-ios` へ移した。TestFlight への配信もそちらから出ている。
+**ここにあった `capture/` は過去の写し**なので畳んだ（履歴は `98a9e80` 以前に残っている）。
 
 ## 構成
 
@@ -36,32 +42,27 @@ LiDAR 点群が「密でメートル正解な初期値」と「depth supervision
 ## ディレクトリ
 
 ```
-capture/   madoriba-capture — iPhone / iPad 撮影アプリ（Swift）
 spec/      MDR バンドル仕様（撮影アプリと Mac 側の唯一の契約）
-tour/      旧ツアービューア（3DGS を畳んだ時点で停止）
 tools/     ベンチマーク・変換スクリプト
 docs/      設計ドキュメント
-vendor/    外部リポジトリ（gitignore 済み）
 ```
-
-Mac 側（平面図・編集・3D・DXF）は別リポジトリへ移した。
-
-**<https://github.com/24th-garnet/CaptureVisualizer>**
-
-このリポジトリは `.mdr` バンドルを**作る**側だけを持つ。バンドルを**使う**側は
-すべて CaptureVisualizer にある。
 
 ## ドキュメント
 
 | | |
 |---|---|
-| [docs/pipeline.md](docs/pipeline.md) | **開発パイプライン仕様**。まずこれを読む |
+| [spec/mdr-v1.md](spec/mdr-v1.md) | **MDR バンドル仕様**。撮影側と利用側の契約 |
+| [docs/pipeline.md](docs/pipeline.md) | 開発パイプライン仕様 |
 | [docs/setup.md](docs/setup.md) | 開発環境セットアップ手順 |
 | [docs/scaniverse-research.md](docs/scaniverse-research.md) | Scaniverse の一次調査（内装スキャン重点） |
 
-## 現在地
+`docs/` と `spec/` は `IrwinCo/madoriba-ios` にも同じものが入っている。
+**撮影アプリから参照するのはあちら側**。ここは記録として残す。
 
-**Phase 0: M1 Max のベンチマーク実測**（`docs/pipeline.md` §9）
+## 経緯
 
-「7K iter で 2〜3 分」は msplat の M4 Max 実測値（74 秒）からの換算に過ぎない。
-これを実測に置き換えないと、iteration 数・ガウシアン上限・部屋分割の粒度が決められない。最初の意思決定ゲート。
+| | |
+|---|---|
+| 2026-09 | 3DGS（recon）を畳む。Tier 1 に絞る |
+| 2026-10-02 | Mac 側（平面図・編集・3D・DXF）を CaptureVisualizer へ分離 |
+| 2026-10 | 撮影アプリを `IrwinCo/madoriba-ios` へ移す。Web 連携（Supabase + madoriba-web）はそちらで開発 |
